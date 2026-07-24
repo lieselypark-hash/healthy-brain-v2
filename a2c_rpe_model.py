@@ -146,6 +146,7 @@ class DopamineModel:
         if not self._rpe_history:
             return {
                 "mean_rpe": 0.0,
+                "mean_abs_rpe": 0.0,
                 "std_rpe": 0.0,
                 "tonic_level": self.tonic_level,
                 "mean_phasic": 0.0,
@@ -154,6 +155,7 @@ class DopamineModel:
         ph_arr = np.array(self._phasic_history)
         return {
             "mean_rpe": float(np.mean(rpe_arr)),
+            "mean_abs_rpe": float(np.mean(np.abs(rpe_arr))),
             "std_rpe": float(np.std(rpe_arr)),
             "tonic_level": self.tonic_level,
             "mean_phasic": float(np.mean(ph_arr)),
@@ -215,13 +217,19 @@ class A2CAgent:
         hidden_dim: int = 128,
         lr: float = 1e-3,
         gamma: float = 0.99,
+        gae_lambda: float = 0.95,
         entropy_coef: float = 0.01,
         value_coef: float = 0.5,
         alpha_tonic: float = 0.005,
+        grad_clip_norm: float = 0.5,
+        policy_clip_eps: float = 0.2,
     ):
         self.gamma = gamma
+        self.gae_lambda = gae_lambda
         self.entropy_coef = entropy_coef
         self.value_coef = value_coef
+        self.grad_clip_norm = grad_clip_norm
+        self.policy_clip_eps = policy_clip_eps
 
         self.network = ActorCriticNetwork(state_dim, action_dim, hidden_dim)
         self.optimizer = torch.optim.Adam(self.network.parameters(), lr=lr)
@@ -265,6 +273,7 @@ class A2CAgent:
         rewards: List[float],
         next_states: List[np.ndarray],
         dones: List[float],
+        old_action_probs: List[float] | None = None,
     ) -> dict:
         """
         Perform one A2C parameter update on a collected mini-batch.
@@ -299,14 +308,33 @@ class A2CAgent:
             next_values = next_values.squeeze(-1) * (1.0 - dones_t)
 
         # ----------------------------------------------------------------
-        # Reward Prediction Error  →  dopamine signal
-        #   δ_t = r_t + γ · V(s_{t+1}) − V(s_t)
+        # One-step TD error (RPE) and GAE advantages
         # ----------------------------------------------------------------
-        rpe = rewards_t + self.gamma * next_values - values.detach()
+        deltas = rewards_t + self.gamma * next_values - values
 
-        # Feed RPE into the dopamine model (updates tonic / phasic signals)
-        mean_rpe = float(rpe.mean().item())
-        self.dopamine.update(mean_rpe)
+        advantages_t = torch.zeros_like(rewards_t)
+        gae = torch.tensor(0.0, dtype=torch.float32)
+        for t in range(len(rewards) - 1, -1, -1):
+            gae = (
+                deltas[t]
+                + self.gamma * self.gae_lambda * (1.0 - dones_t[t]) * gae
+            )
+            advantages_t[t] = gae
+
+        returns_t = advantages_t + values.detach()
+        rpe = deltas
+
+        # Advantage normalization stabilizes policy-gradient updates.
+        advantages_norm = (advantages_t - advantages_t.mean()) / (
+            advantages_t.std(unbiased=False) + 1e-8
+        )
+
+        # Update dopamine with per-transition RPE (preserves variance information).
+        for rpe_value in rpe.detach().cpu().tolist():
+            self.dopamine.update(float(rpe_value))
+
+        mean_rpe = float(rpe.detach().mean().item())
+        mean_abs_rpe = float(rpe.detach().abs().mean().item())
 
         # ----------------------------------------------------------------
         # Actor loss  (policy gradient weighted by advantage = RPE)
@@ -315,13 +343,27 @@ class A2CAgent:
         log_probs = dist.log_prob(actions_t)
         entropy = dist.entropy().mean()
 
-        actor_loss = -(log_probs * rpe.detach()).mean()
+        if old_action_probs is not None:
+            old_probs_t = torch.as_tensor(old_action_probs, dtype=torch.float32)
+            old_log_probs = torch.log(old_probs_t.clamp_min(1e-8))
+            ratios = torch.exp(log_probs - old_log_probs)
+            adv_detached = advantages_norm.detach()
+            unclipped = ratios * adv_detached
+            clipped = torch.clamp(
+                ratios,
+                1.0 - self.policy_clip_eps,
+                1.0 + self.policy_clip_eps,
+            ) * adv_detached
+            actor_loss = -torch.min(unclipped, clipped).mean()
+            approx_kl = float((old_log_probs - log_probs).mean().item())
+        else:
+            actor_loss = -(log_probs * advantages_norm.detach()).mean()
+            approx_kl = 0.0
 
         # ----------------------------------------------------------------
         # Critic loss  (minimise squared TD error)
         # ----------------------------------------------------------------
-        td_targets = (rewards_t + self.gamma * next_values).detach()
-        critic_loss = F.mse_loss(values, td_targets)
+        critic_loss = F.mse_loss(values, returns_t.detach())
 
         # ----------------------------------------------------------------
         # Combined loss
@@ -335,7 +377,7 @@ class A2CAgent:
         self.optimizer.zero_grad()
         total_loss.backward()
         # Gradient clipping for training stability
-        nn.utils.clip_grad_norm_(self.network.parameters(), max_norm=0.5)
+        nn.utils.clip_grad_norm_(self.network.parameters(), max_norm=self.grad_clip_norm)
         self.optimizer.step()
 
         self.training_losses.append(float(total_loss.item()))
@@ -345,7 +387,9 @@ class A2CAgent:
             "critic_loss": float(critic_loss.item()),
             "total_loss": float(total_loss.item()),
             "mean_rpe": mean_rpe,
+            "mean_abs_rpe": mean_abs_rpe,
             "entropy": float(entropy.item()),
+            "approx_kl": approx_kl,
         }
 
     # ------------------------------------------------------------------

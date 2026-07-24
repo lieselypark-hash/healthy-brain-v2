@@ -1,0 +1,64 @@
+============================================================
+  A2C + RPE Dopamine Model – Pick-and-Place Task
+============================================================
+  Grid size  : 5×5
+  State dim  : 7   Action dim: 6
+  Hidden dim : 128
+  LR=0.001  γ=0.99  λ=0.95  n_steps=8
+  Entropy: 0.05 → 0.005 (decay 1000 ep)
+============================================================
+Ep   100/4000  AvgReward:  -2.094  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0027  RPE(|mean|): +0.0164  Tonic DA: +0.0055
+Ep   200/4000  AvgReward:  -1.977  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0012  RPE(|mean|): +0.0117  Tonic DA: +0.0021
+Ep   300/4000  AvgReward:  -1.934  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0009  RPE(|mean|): +0.0215  Tonic DA: +0.0029
+Ep   400/4000  AvgReward:  -1.970  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0019  RPE(|mean|): +0.0274  Tonic DA: +0.0056
+Ep   500/4000  AvgReward:  -1.969  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0011  RPE(|mean|): +0.0223  Tonic DA: +0.0032
+  [checkpoint saved → checkpoints/seed_42/a2c_rpe_ep500.pt]
+Ep   600/4000  AvgReward:  -1.979  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0007  RPE(|mean|): +0.0266  Tonic DA: +0.0030
+Ep   700/4000  AvgReward:  -1.962  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0007  RPE(|mean|): +0.0232  Tonic DA: +0.0033
+Ep   800/4000  AvgReward:  -1.976  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0017  RPE(|mean|): +0.0182  Tonic DA: +0.0042
+Ep   900/4000  AvgReward:  -1.962  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0009  RPE(|mean|): +0.0247  Tonic DA: +0.0022
+Ep  1000/4000  AvgReward:  -1.972  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0030  RPE(|mean|): +0.0145  Tonic DA: +0.0055
+  [checkpoint saved → checkpoints/seed_42/a2c_rpe_ep1000.pt]
+Ep  1100/4000  AvgReward:  -1.971  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0019  RPE(|mean|): +0.0203  Tonic DA: +0.0036
+Ep  1200/4000  AvgReward:  -1.981  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0020  RPE(|mean|): +0.0281  Tonic DA: +0.0036
+Ep  1300/4000  AvgReward:  -1.984  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0017  RPE(|mean|): +0.0300  Tonic DA: +0.0036
+Ep  1400/4000  AvgReward:  -1.981  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0019  RPE(|mean|): +0.0237  Tonic DA: +0.0048
+Ep  1500/4000  AvgReward:  -1.987  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0022  RPE(|mean|): +0.0141  Tonic DA: +0.0040
+  [checkpoint saved → checkpoints/seed_42/a2c_rpe_ep1500.pt]
+Ep  1600/4000  AvgReward:  -1.982  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0025  RPE(|mean|): +0.0154  Tonic DA: +0.0044
+Ep  1700/4000  AvgReward:  -1.990  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0022  RPE(|mean|): +0.0176  Tonic DA: +0.0053
+Ep  1800/4000  AvgReward:  -1.992  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0028  RPE(|mean|): +0.0163  Tonic DA: +0.0045
+Ep  1900/4000  AvgReward:  -1.987  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0028  RPE(|mean|): +0.0282  Tonic DA: +0.0045
+Ep  2000/4000  AvgReward:  -1.990  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0011  RPE(|mean|): +0.0187  Tonic DA: +0.0031
+  [checkpoint saved → checkpoints/seed_42/a2c_rpe_ep2000.pt]
+Ep  2100/4000  AvgReward:  -1.979  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0030  RPE(|mean|): +0.0282  Tonic DA: +0.0052
+Ep  2200/4000  AvgReward:  -1.971  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0032  RPE(|mean|): +0.0282  Tonic DA: +0.0071
+Ep  2300/4000  AvgReward:  -1.977  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0033  RPE(|mean|): +0.0194  Tonic DA: +0.0056
+Ep  2400/4000  AvgReward:  -1.971  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0054  RPE(|mean|): +0.0219  Tonic DA: +0.0079
+Ep  2500/4000  AvgReward:  -1.982  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0030  RPE(|mean|): +0.0217  Tonic DA: +0.0058
+  [checkpoint saved → checkpoints/seed_42/a2c_rpe_ep2500.pt]
+Ep  2600/4000  AvgReward:  -1.991  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0039  RPE(|mean|): +0.0204  Tonic DA: +0.0075
+Ep  2700/4000  AvgReward:  -1.993  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0026  RPE(|mean|): +0.0227  Tonic DA: +0.0049
+Ep  2800/4000  AvgReward:  -1.983  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0036  RPE(|mean|): +0.0069  Tonic DA: +0.0063
+Ep  2900/4000  AvgReward:  -2.002  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0049  RPE(|mean|): +0.0067  Tonic DA: +0.0076
+Ep  3000/4000  AvgReward:  -2.001  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0034  RPE(|mean|): +0.0097  Tonic DA: +0.0064
+  [checkpoint saved → checkpoints/seed_42/a2c_rpe_ep3000.pt]
+Ep  3100/4000  AvgReward:  -2.001  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0039  RPE(|mean|): +0.0125  Tonic DA: +0.0078
+Ep  3200/4000  AvgReward:  -2.002  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0037  RPE(|mean|): +0.0082  Tonic DA: +0.0074
+Ep  3300/4000  AvgReward:  -2.002  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0045  RPE(|mean|): +0.0158  Tonic DA: +0.0087
+Ep  3400/4000  AvgReward:  -2.002  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0034  RPE(|mean|): +0.0228  Tonic DA: +0.0064
+Ep  3500/4000  AvgReward:  -1.997  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0037  RPE(|mean|): +0.0278  Tonic DA: +0.0064
+  [checkpoint saved → checkpoints/seed_42/a2c_rpe_ep3500.pt]
+Ep  3600/4000  AvgReward:  -2.002  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0031  RPE(|mean|): +0.0120  Tonic DA: +0.0061
+Ep  3700/4000  AvgReward:  -2.003  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0029  RPE(|mean|): +0.0160  Tonic DA: +0.0056
+Ep  3800/4000  AvgReward:  -2.008  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0020  RPE(|mean|): +0.0182  Tonic DA: +0.0043
+Ep  3900/4000  AvgReward:  -2.002  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0037  RPE(|mean|): +0.0109  Tonic DA: +0.0050
+Ep  4000/4000  AvgReward:  -2.004  AvgLen:  200.0  Success: 0.000  RPE(mean): +0.0044  RPE(|mean|): +0.0059  Tonic DA: +0.0075
+  [checkpoint saved → checkpoints/seed_42/a2c_rpe_ep4000.pt]
+
+============================================================
+  Training complete. Episodes: 4000
+  Overall success rate: 0.000
+  Final tonic dopamine level: 0.0075
+============================================================
+  Final model saved → checkpoints/seed_42/a2c_rpe_final.pt

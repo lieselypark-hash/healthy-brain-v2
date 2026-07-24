@@ -19,33 +19,33 @@ from a2c_rpe_model import A2CAgent, ActorCriticNetwork, DopamineModel
 class TestActorCriticNetwork:
     @pytest.fixture
     def net(self):
-        return ActorCriticNetwork(state_dim=7, action_dim=6, hidden_dim=64)
+        return ActorCriticNetwork(state_dim=9, action_dim=7, hidden_dim=64)
 
     def test_forward_shapes(self, net):
-        batch = torch.randn(4, 7)
+        batch = torch.randn(4, 9)
         probs, value = net(batch)
-        assert probs.shape == (4, 6)
+        assert probs.shape == (4, 7)
         assert value.shape == (4, 1)
 
     def test_action_probs_sum_to_one(self, net):
-        x = torch.randn(8, 7)
+        x = torch.randn(8, 9)
         probs, _ = net(x)
         totals = probs.sum(dim=-1)
         torch.testing.assert_close(totals, torch.ones(8), atol=1e-5, rtol=0)
 
     def test_action_probs_non_negative(self, net):
-        x = torch.randn(8, 7)
+        x = torch.randn(8, 9)
         probs, _ = net(x)
         assert (probs >= 0).all()
 
     def test_single_sample(self, net):
-        x = torch.randn(1, 7)
+        x = torch.randn(1, 9)
         probs, value = net(x)
-        assert probs.shape == (1, 6)
+        assert probs.shape == (1, 7)
         assert value.shape == (1, 1)
 
     def test_gradients_flow(self, net):
-        x = torch.randn(4, 7)
+        x = torch.randn(4, 9)
         probs, value = net(x)
         loss = -probs.log().mean() + value.mean()
         loss.backward()
@@ -113,8 +113,8 @@ class TestDopamineModel:
 # A2CAgent tests
 # ---------------------------------------------------------------------------
 
-STATE_DIM  = 7
-ACTION_DIM = 6
+STATE_DIM  = 9
+ACTION_DIM = 7
 
 
 @pytest.fixture
@@ -175,8 +175,9 @@ class TestA2CAgentUpdate:
         assert len(agent.training_losses) == 1
 
     def test_update_triggers_dopamine_update(self, agent, sample_batch):
+        _, _, rewards, _, _ = sample_batch
         agent.update(*sample_batch)
-        assert len(agent.dopamine.rpe_history) == 1
+        assert len(agent.dopamine.rpe_history) == len(rewards)
 
     def test_rpe_is_finite(self, agent, sample_batch):
         info = agent.update(*sample_batch)

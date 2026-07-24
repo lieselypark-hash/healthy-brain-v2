@@ -13,8 +13,8 @@ class TestPickAndPlaceEnvInit:
         env = PickAndPlaceEnv()
         assert env.grid_size == 5
         assert env.max_steps == 200
-        assert env.action_space.n == 6
-        assert env.observation_space.shape == (7,)
+        assert env.action_space.n == 7
+        assert env.observation_space.shape == (9,)
 
     def test_custom_grid_size(self):
         env = PickAndPlaceEnv(grid_size=8)
@@ -29,7 +29,7 @@ class TestPickAndPlaceEnvReset:
     def test_obs_shape_and_bounds(self):
         env = PickAndPlaceEnv(seed=0)
         obs, info = env.reset()
-        assert obs.shape == (7,)
+        assert obs.shape == (9,)
         assert np.all(obs >= 0.0) and np.all(obs <= 1.0)
         assert obs.dtype == np.float32
 
@@ -56,9 +56,14 @@ class TestPickAndPlaceEnvReset:
 
 
 class TestPickAndPlaceEnvStep:
+    def _start_task(self, env):
+        env.cue_step = 1
+        env.step(PickAndPlaceEnv.START)
+
     def test_movement_changes_agent_pos(self):
         env = PickAndPlaceEnv(grid_size=5, seed=10)
         env.reset()
+        self._start_task(env)
         # Force agent to middle so any move is valid
         env.agent_pos = np.array([2, 2], dtype=np.int32)
         original = env.agent_pos.copy()
@@ -68,6 +73,7 @@ class TestPickAndPlaceEnvStep:
     def test_movement_respects_grid_bounds(self):
         env = PickAndPlaceEnv(grid_size=5, seed=10)
         env.reset()
+        self._start_task(env)
         env.agent_pos = np.array([0, 0], dtype=np.int32)
         env.step(PickAndPlaceEnv.UP)    # already at row 0 – cannot go further up
         env.step(PickAndPlaceEnv.LEFT)  # already at col 0
@@ -78,15 +84,29 @@ class TestPickAndPlaceEnvStep:
         env = PickAndPlaceEnv(seed=5)
         env.reset()
         obs, reward, terminated, truncated, info = env.step(0)
-        assert obs.shape == (7,)
+        assert obs.shape == (9,)
         assert isinstance(reward, float)
         assert isinstance(terminated, bool)
         assert isinstance(truncated, bool)
         assert "holding" in info and "object_placed" in info
 
+    def test_start_required_after_cue(self):
+        env = PickAndPlaceEnv(seed=6)
+        env.reset()
+        env.cue_step = 1
+        # Before START, movement should not begin the task.
+        _, r1, _, _, info1 = env.step(PickAndPlaceEnv.RIGHT)
+        assert info1["task_started"] is False
+        assert r1 == PickAndPlaceEnv.REWARD_INVALID
+        # START action begins task.
+        _, r2, _, _, info2 = env.step(PickAndPlaceEnv.START)
+        assert info2["task_started"] is True
+        assert r2 == PickAndPlaceEnv.REWARD_START
+
     def test_invalid_pick_gives_negative_reward(self):
         env = PickAndPlaceEnv(seed=7)
         env.reset()
+        self._start_task(env)
         # Move agent away from object
         env.agent_pos = np.array([0, 0], dtype=np.int32)
         env.object_pos = np.array([4, 4], dtype=np.int32)
@@ -97,6 +117,7 @@ class TestPickAndPlaceEnvStep:
     def test_invalid_place_gives_negative_reward(self):
         env = PickAndPlaceEnv(seed=8)
         env.reset()
+        self._start_task(env)
         env.holding = False  # Not holding anything
         _, reward, _, _, _ = env.step(PickAndPlaceEnv.PLACE)
         assert reward == PickAndPlaceEnv.REWARD_INVALID
@@ -125,6 +146,9 @@ class TestPickAndPlaceFullTask:
         env.holding = False
         env.object_placed = False
         env._step_count = 0
+        env.cue_step = 1
+        env.task_started = True
+        env.task_started_step = 1
         return env
 
     def test_pick_reward_and_holding_flag(self):
