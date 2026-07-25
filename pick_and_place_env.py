@@ -66,7 +66,8 @@ class PickAndPlaceEnv(gym.Env):
 
         self.grid_size = grid_size
         self.max_steps = max_steps
-        self.start_cue_max_delay = max(0, int(start_cue_max_delay))
+        self.start_cue_max_delay = max(1, int(start_cue_max_delay))
+        self.start_cue_min_delay = 1
         self.shaping_start = shaping_start
         self.shaping_end = shaping_end
         self.shaping_scale = shaping_start
@@ -85,7 +86,9 @@ class PickAndPlaceEnv(gym.Env):
         self.holding: bool = False
         self.object_placed: bool = False
         self._step_count: int = 0
-        self.cue_step: int = 1
+        # Cue delay is deterministic (no per-episode jitter).
+        # Curriculum can move this between start_cue_min_delay and start_cue_max_delay.
+        self.cue_step: int = self.start_cue_max_delay
         self.task_started: bool = False
         self.task_started_step: Optional[int] = None
 
@@ -113,7 +116,6 @@ class PickAndPlaceEnv(gym.Env):
         self.holding = False
         self.object_placed = False
         self._step_count = 0
-        self.cue_step = int(self._np_rng.integers(1, self.start_cue_max_delay + 2))
         self.task_started = False
         self.task_started_step = None
 
@@ -129,6 +131,11 @@ class PickAndPlaceEnv(gym.Env):
         """
         p = float(np.clip(progress, 0.0, 1.0))
         self.shaping_scale = self.shaping_start + (self.shaping_end - self.shaping_start) * p
+        # Easier early training: cue appears sooner; later training uses a longer fixed delay.
+        cue_delay = self.start_cue_min_delay + (
+            self.start_cue_max_delay - self.start_cue_min_delay
+        ) * p
+        self.cue_step = int(round(cue_delay))
 
     def step(self, action: int):
         assert self.action_space.contains(action), f"Invalid action: {action}"

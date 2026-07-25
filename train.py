@@ -4,7 +4,7 @@ Training script for the A2C + RPE (Dopamine) Pick-and-Place agent.
 Usage
 -----
     python train.py                           # default settings
-    python train.py --n_episodes 3000 --lr 3e-4 --grid_size 6
+    python train.py --n_episodes 10000 --lr 3e-4 --grid_size 6
     python train.py --n_episodes 500 --no_save   # quick smoke-test
 
 Key parameters
@@ -69,7 +69,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Train A2C with RPE (dopamine) on the Pick-and-Place task."
     )
-    parser.add_argument("--n_episodes",  type=int,   default=3000)
+    parser.add_argument("--n_episodes",  type=int,   default=10000)
     parser.add_argument("--n_steps",     type=int,   default=16,
                         help="Number of steps per A2C update.")
     parser.add_argument("--grid_size",   type=int,   default=5)
@@ -206,10 +206,20 @@ def train(args: argparse.Namespace) -> tuple[A2CAgent, list, list]:
     best_success = -1.0
     best_episode = -1
     best_state_dict = None
+    restore_events = 0
+    last_restore_episode = -10**9
     schedule_progress = 0.0
     rolling_success = 0.0
     base_lr = args.lr
     metrics_rows: list[dict] = []
+
+    # Stability guards to avoid late-stage collapse under maximum curriculum.
+    schedule_ramp_step = 0.01
+    schedule_backoff_step = 0.02
+    restore_drop_margin = 0.12
+    restore_backoff = 0.20
+    min_best_for_restore = 0.50
+    restore_cooldown = max(args.best_window, args.log_interval)
 
     for episode in range(args.n_episodes):
         if episode + 1 > args.schedule_warmup_episodes and episode_successes:
@@ -217,8 +227,17 @@ def train(args: argparse.Namespace) -> tuple[A2CAgent, list, list]:
             rolling_success = float(np.mean(episode_successes[-window:]))
             target = max(args.schedule_target_success, 1e-6)
             perf_progress = float(np.clip(rolling_success / target, 0.0, 1.0))
-            # Keep schedule monotonic to avoid moving-target regressions.
-            schedule_progress = max(schedule_progress, perf_progress)
+            # Allow controlled backoff when performance drops.
+            if perf_progress >= schedule_progress:
+                schedule_progress = min(
+                    1.0,
+                    schedule_progress + min(schedule_ramp_step, perf_progress - schedule_progress),
+                )
+            else:
+                schedule_progress = max(
+                    perf_progress,
+                    schedule_progress - min(schedule_backoff_step, schedule_progress - perf_progress),
+                )
 
         agent.entropy_coef = (
             args.entropy_coef
@@ -285,6 +304,24 @@ def train(args: argparse.Namespace) -> tuple[A2CAgent, list, list]:
                 best_episode = episode + 1
                 best_state_dict = copy.deepcopy(agent.network.state_dict())
 
+            # If rolling performance collapses far below the best seen level,
+            # restore known-good weights and ease curriculum difficulty.
+            if (
+                best_state_dict is not None
+                and best_success >= min_best_for_restore
+                and (episode + 1 - last_restore_episode) >= restore_cooldown
+                and rolling_success < (best_success - restore_drop_margin)
+            ):
+                agent.network.load_state_dict(best_state_dict)
+                schedule_progress = max(0.0, schedule_progress - restore_backoff)
+                last_restore_episode = episode + 1
+                restore_events += 1
+                print(
+                    f"  [stability restore @ ep {episode+1}: "
+                    f"rolling={rolling_success:.3f}, best={best_success:.3f}, "
+                    f"schedule={schedule_progress:.2f}]"
+                )
+
         da = agent.dopamine.get_stats()
         cumulative_success_rate = success_count / (episode + 1)
         cumulative_start_rate = start_count / (episode + 1)
@@ -346,6 +383,7 @@ def train(args: argparse.Namespace) -> tuple[A2CAgent, list, list]:
     da = agent.dopamine.get_stats()
     print(f"  Final tonic dopamine level: {da['tonic_level']:.4f}")
     print(f"  Start rate: {start_count / args.n_episodes:.3f}")
+    print(f"  Mid-training stability restores: {restore_events}")
     if best_state_dict is not None:
         agent.network.load_state_dict(best_state_dict)
         print(

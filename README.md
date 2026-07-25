@@ -31,3 +31,15 @@ python results.py --metrics results/training_metrics.csv \
 	--success_out results/custom_success.png \
 	--reward_out results/custom_reward.png
 ```
+
+Generate a PETH-adjacent TD/RPE diagram aligned to cue onset and reward events,
+with curves for beginning/middle/end of training:
+
+```bash
+python peth_rpe.py
+```
+
+Outputs:
+
+- results/rpe_peth_begin_mid_end.png
+- results/rpe_peth_event_counts.csv

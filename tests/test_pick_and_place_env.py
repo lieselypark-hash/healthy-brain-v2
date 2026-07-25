@@ -54,6 +54,27 @@ class TestPickAndPlaceEnvReset:
         obs2, _ = env2.reset()
         np.testing.assert_array_equal(obs1, obs2)
 
+    def test_cue_delay_is_deterministic_without_jitter(self):
+        env = PickAndPlaceEnv(seed=13, start_cue_max_delay=4)
+        env.set_curriculum(0.0)
+        env.reset()
+        cue_1 = env.cue_step
+        env.reset()
+        cue_2 = env.cue_step
+        assert cue_1 == cue_2 == 1
+
+    def test_curriculum_makes_cue_easier_early(self):
+        env = PickAndPlaceEnv(seed=14, start_cue_max_delay=4)
+        env.set_curriculum(0.0)
+        env.reset()
+        early_cue = env.cue_step
+        env.set_curriculum(1.0)
+        env.reset()
+        late_cue = env.cue_step
+        assert early_cue == 1
+        assert late_cue == 4
+        assert early_cue <= late_cue
+
 
 class TestPickAndPlaceEnvStep:
     def _start_task(self, env):
