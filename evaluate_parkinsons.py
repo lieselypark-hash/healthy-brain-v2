@@ -1,0 +1,214 @@
+"""
+Evaluation script using the Parkinson dopamine variant agent.
+
+This script is intended to load checkpoints trained with the normal
+``a2c_rpe_model`` and evaluate them without retraining.
+
+Usage
+-----
+    python evaluate_parkinsons.py                                 # uses checkpoints/a2c_rpe_final.pt
+    python evaluate_parkinsons.py --checkpoint checkpoints/a2c_rpe_final.pt
+    python evaluate_parkinsons.py --checkpoint checkpoints/a2c_rpe_final.pt --render --episodes 500
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import importlib.util
+import os
+import sys
+
+
+def _ensure_evaluation_runtime() -> None:
+    """Re-launch with workspace venv when core dependencies are missing."""
+    required = ("numpy", "torch")
+    if all(importlib.util.find_spec(name) is not None for name in required):
+        return
+
+    if os.environ.get("HB_EVAL_REEXEC") == "1":
+        return
+
+    repo_root = os.path.dirname(os.path.abspath(__file__))
+    venv_python = os.path.join(repo_root, ".venv", "bin", "python")
+    if os.path.exists(venv_python):
+        env = os.environ.copy()
+        env["HB_EVAL_REEXEC"] = "1"
+        os.execve(venv_python, [venv_python, os.path.abspath(__file__), *sys.argv[1:]], env)
+
+
+_ensure_evaluation_runtime()
+
+import numpy as np
+import torch
+
+from parkinsons_a2c_rpe_model import A2CAgent
+from pick_and_place_env import PickAndPlaceEnv
+from results import generate_plots_from_metrics
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Evaluate a normal-trained checkpoint with the Parkinson dopamine variant agent."
+    )
+    parser.add_argument("--checkpoint", type=str, default="checkpoints/a2c_rpe_final.pt",
+                        help="Path to a .pt checkpoint file.")
+    parser.add_argument("--grid_size",  type=int, default=5)
+    parser.add_argument("--hidden_dim", type=int, default=128)
+    parser.add_argument("--episodes",   type=int, default=500)
+    parser.add_argument("--render",     action="store_true",
+                        help="Print ASCII grid after each step.")
+    parser.add_argument("--seed",       type=int, default=0)
+    parser.add_argument("--results_dir", type=str, default="results",
+                        help="Directory to store evaluation metrics and plots.")
+    parser.add_argument("--metrics_filename", type=str, default="evaluation_metrics.csv",
+                        help="CSV filename for per-episode evaluation metrics.")
+    parser.add_argument("--success_plot_filename", type=str, default="success_rate.png",
+                        help="Filename for evaluation success-rate plot.")
+    parser.add_argument("--reward_plot_filename", type=str, default="reward.png",
+                        help="Filename for evaluation reward plot.")
+    return parser.parse_args()
+
+
+def _resolve_checkpoint_path(path: str) -> str:
+    """Resolve checkpoint path, falling back to checkpoints/<basename>."""
+    if os.path.exists(path):
+        return path
+
+    candidate = os.path.join("checkpoints", os.path.basename(path))
+    if os.path.exists(candidate):
+        return candidate
+
+    raise FileNotFoundError(path)
+
+
+def save_evaluation_metrics(path: str, rows: list[dict]) -> None:
+    """Save per-episode evaluation metrics to CSV."""
+    if not rows:
+        return
+
+    fieldnames = [
+        "episode",
+        "reward",
+        "episode_length",
+        "success",
+        "started_task",
+        "cumulative_success_rate",
+        "rolling_success_rate",
+        "cumulative_start_rate",
+        "rolling_start_rate",
+    ]
+    with open(path, "w", newline="", encoding="utf-8") as fp:
+        writer = csv.DictWriter(fp, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def evaluate(args: argparse.Namespace) -> dict:
+    """Run the agent for ``args.episodes`` episodes and return summary stats."""
+    checkpoint_path = _resolve_checkpoint_path(args.checkpoint)
+    env = PickAndPlaceEnv(grid_size=args.grid_size, max_steps=200)
+    state_dim  = env.observation_space.shape[0]
+    action_dim = env.action_space.n
+
+    agent = A2CAgent(
+        state_dim=state_dim,
+        action_dim=action_dim,
+        hidden_dim=args.hidden_dim,
+    )
+
+    if checkpoint_path:
+        agent.load(checkpoint_path)
+        print(f"Loaded checkpoint (trained with normal A2C RPE): {checkpoint_path}")
+    else:
+        print("No checkpoint provided – using randomly initialised weights.")
+
+    rewards, lengths, successes, starts = [], [], [], []
+    rows: list[dict] = []
+
+    for ep in range(args.episodes):
+        obs, _ = env.reset(seed=args.seed + ep)
+        ep_reward = 0.0
+        ep_length = 0
+        terminated = truncated = False
+
+        while not (terminated or truncated):
+            if args.render:
+                env.render()
+
+            action, _ = agent.select_action(obs)
+            obs, reward, terminated, truncated, info = env.step(action)
+            ep_reward += reward
+            ep_length += 1
+
+        if args.render:
+            env.render()
+            print(f"--- Episode {ep+1} end. Reward={ep_reward:.2f} ---\n")
+
+        rewards.append(ep_reward)
+        lengths.append(ep_length)
+        successes.append(info.get("object_placed", False))
+        starts.append(bool(info.get("task_started", False)))
+
+        cumulative_success_rate = float(np.mean(successes))
+        cumulative_start_rate = float(np.mean(starts))
+        rolling_start_rate = float(np.mean(starts[max(0, len(starts) - 50):]))
+        rows.append(
+            {
+                "episode": ep + 1,
+                "reward": float(ep_reward),
+                "episode_length": int(ep_length),
+                "success": int(successes[-1]),
+                "started_task": int(starts[-1]),
+                "cumulative_success_rate": cumulative_success_rate,
+                "rolling_success_rate": cumulative_success_rate,
+                "cumulative_start_rate": cumulative_start_rate,
+                "rolling_start_rate": rolling_start_rate,
+            }
+        )
+
+    stats = {
+        "mean_reward": float(np.mean(rewards)),
+        "std_reward":  float(np.std(rewards)),
+        "mean_length": float(np.mean(lengths)),
+        "success_rate": float(np.mean(successes)),
+        "start_rate": float(np.mean(starts)),
+        "episodes": args.episodes,
+    }
+
+    print(f"\nEvaluation over {args.episodes} episodes:")
+    print(f"  Mean reward  : {stats['mean_reward']:.3f} ± {stats['std_reward']:.3f}")
+    print(f"  Mean length  : {stats['mean_length']:.1f}")
+    print(f"  Success rate : {stats['success_rate']:.3f}")
+    print(f"  Start rate   : {stats['start_rate']:.3f}")
+
+    os.makedirs(args.results_dir, exist_ok=True)
+    metrics_path = os.path.join(args.results_dir, args.metrics_filename)
+    save_evaluation_metrics(metrics_path, rows)
+    print(f"  Evaluation metrics saved → {metrics_path}")
+
+    success_plot_path = os.path.join(args.results_dir, args.success_plot_filename)
+    reward_plot_path = os.path.join(args.results_dir, args.reward_plot_filename)
+    try:
+        generate_plots_from_metrics(
+            metrics_path=metrics_path,
+            success_out=success_plot_path,
+            reward_out=reward_plot_path,
+            rolling_window=max(10, args.episodes // 10),
+            title_prefix="Evaluation",
+        )
+        print(f"  Success-rate plot saved → {success_plot_path}")
+        print(f"  Reward plot saved → {reward_plot_path}")
+    except ModuleNotFoundError as exc:
+        if exc.name == "matplotlib":
+            print("  Plot generation skipped: matplotlib not available in this interpreter.")
+            print("  Run plots with: .venv/bin/python results.py")
+        else:
+            raise
+
+    return stats
+
+
+if __name__ == "__main__":
+    args = parse_args()
+    evaluate(args)
