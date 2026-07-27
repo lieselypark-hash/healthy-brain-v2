@@ -481,8 +481,10 @@ def main() -> None:
             window_post=args.peth_window_post,
         )
         print("Saved PETH plots → results/rpe_peth_begin_mid_end.png")
+        print("Saved RPE component plots → results/rpe_components_begin_mid_end.png")
         print("Saved PETH counts → results/rpe_peth_event_counts.csv")
         print("Saved Parkinson PETH plots → results/rpe_peth_parkinsons_begin_mid_end.png")
+        print("Saved Parkinson RPE component plots → results/rpe_components_parkinsons_begin_mid_end.png")
         print("Saved Parkinson PETH counts → results/rpe_peth_parkinsons_event_counts.csv")
         print("Saved PETH comparison plot → results/rpe_peth_model_comparison.png")
 

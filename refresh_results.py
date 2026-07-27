@@ -123,6 +123,7 @@ def main() -> None:
             window_post=max(1, args.peth_window_post),
         )
         print("Saved PETH plots and event-count CSV files.")
+        print("Saved RPE component figures.")
 
 
 if __name__ == "__main__":

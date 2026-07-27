@@ -61,4 +61,5 @@ python peth_rpe.py
 Outputs:
 
 - results/rpe_peth_begin_mid_end.png
+- results/rpe_components_begin_mid_end.png
 - results/rpe_peth_event_counts.csv

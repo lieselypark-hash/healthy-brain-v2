@@ -144,6 +144,35 @@ def compute_parkinsons_rpe(agent: A2CAgent, state: np.ndarray, reward: float,
     return float(pd_delta.item())
 
 
+def compute_td_components(
+    agent: A2CAgent,
+    state: np.ndarray,
+    reward: float,
+    next_state: np.ndarray,
+    done: bool,
+    gamma: float,
+) -> tuple[float, float, float, float]:
+    with torch.no_grad():
+        s = torch.as_tensor(state, dtype=torch.float32).unsqueeze(0)
+        ns = torch.as_tensor(next_state, dtype=torch.float32).unsqueeze(0)
+        _, v = agent.network(s)
+        _, nv = agent.network(ns)
+        value_t = float(v.squeeze().item())
+        value_t1 = 0.0 if done else float(nv.squeeze().item())
+        reward_value = float(reward)
+        rpe = float(
+            parkinsons_rpe(
+                reward=torch.as_tensor(reward_value, dtype=torch.float32),
+                gamma=gamma,
+                value=torch.as_tensor(value_t, dtype=torch.float32),
+                next_value=torch.as_tensor(value_t1, dtype=torch.float32),
+                surviving_fraction=agent.surviving_fraction,
+                transmission_probability=agent.transmission_probability,
+            ).item()
+        )
+    return reward_value, value_t1, value_t, rpe
+
+
 def extract_window(trace: list[float], center_idx: int, pre: int, post: int) -> np.ndarray:
     window = np.full(pre + post + 1, np.nan, dtype=np.float32)
     for offset in range(-pre, post + 1):
@@ -209,6 +238,10 @@ def collect_phase_windows(
 
     cue_windows: list[np.ndarray] = []
     reward_windows: list[np.ndarray] = []
+    reward_component_windows: list[np.ndarray] = []
+    next_value_windows: list[np.ndarray] = []
+    value_windows: list[np.ndarray] = []
+    rpe_windows: list[np.ndarray] = []
 
     for ep in range(args.probe_episodes):
         # Keep Parkinson transmission sampling reproducible between runs.
@@ -217,6 +250,9 @@ def collect_phase_windows(
         done = False
         prev_cue_active = False
         rpe_trace: list[float] = []
+        reward_trace: list[float] = []
+        next_value_trace: list[float] = []
+        value_trace: list[float] = []
         cue_events: list[int] = []
         reward_events: list[int] = []
 
@@ -225,7 +261,17 @@ def collect_phase_windows(
             next_obs, reward, terminated, truncated, info = env.step(action)
             done = bool(terminated or truncated)
 
-            rpe = compute_parkinsons_rpe(agent, obs, reward, next_obs, done, args.gamma)
+            reward_value, value_t1, value_t, rpe = compute_td_components(
+                agent,
+                obs,
+                reward,
+                next_obs,
+                done,
+                args.gamma,
+            )
+            reward_trace.append(reward_value)
+            next_value_trace.append(value_t1)
+            value_trace.append(value_t)
             rpe_trace.append(rpe)
 
             cue_active = bool(info.get("cue_active", False))
@@ -242,10 +288,18 @@ def collect_phase_windows(
             cue_windows.append(extract_window(rpe_trace, idx, pre, post))
         for idx in reward_events:
             reward_windows.append(extract_window(rpe_trace, idx, pre, post))
+            reward_component_windows.append(extract_window(reward_trace, idx, pre, post))
+            next_value_windows.append(extract_window(next_value_trace, idx, pre, post))
+            value_windows.append(extract_window(value_trace, idx, pre, post))
+            rpe_windows.append(extract_window(rpe_trace, idx, pre, post))
 
     width = pre + post + 1
     cue_mean, cue_sem, cue_n = aggregate_windows(cue_windows, width)
     rew_mean, rew_sem, rew_n = aggregate_windows(reward_windows, width)
+    reward_component_mean, reward_component_sem, _ = aggregate_windows(reward_component_windows, width)
+    next_value_mean, next_value_sem, _ = aggregate_windows(next_value_windows, width)
+    value_mean, value_sem, _ = aggregate_windows(value_windows, width)
+    rpe_component_mean, rpe_component_sem, _ = aggregate_windows(rpe_windows, width)
 
     return {
         "phase": phase_name,
@@ -256,6 +310,14 @@ def collect_phase_windows(
         "reward_mean": rew_mean,
         "reward_sem": rew_sem,
         "reward_events": rew_n,
+        "reward_component_mean": reward_component_mean,
+        "reward_component_sem": reward_component_sem,
+        "next_value_mean": next_value_mean,
+        "next_value_sem": next_value_sem,
+        "value_mean": value_mean,
+        "value_sem": value_sem,
+        "rpe_component_mean": rpe_component_mean,
+        "rpe_component_sem": rpe_component_sem,
     }
 
 
@@ -333,6 +395,54 @@ def plot_peth(phase_data: list[dict], out_path: str, pre: int, post: int) -> Non
     plt.close(fig)
 
 
+def plot_rpe_components(phase_data: list[dict], out_path: str, pre: int, post: int) -> None:
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+
+    x = np.arange(-pre, post + 1)
+    fig, axes = plt.subplots(2, 2, figsize=(14, 8.6), sharex=True)
+    component_specs = [
+        ("reward_component_mean", "reward_component_sem", "Reward"),
+        ("next_value_mean", "next_value_sem", "Value at state t+1"),
+        ("value_mean", "value_sem", "Value at state t"),
+        ("rpe_component_mean", "rpe_component_sem", "TD/RPE"),
+    ]
+    color_map = {
+        "beginning": "#1f77b4",
+        "middle": "#ff7f0e",
+        "end": "#2ca02c",
+    }
+
+    for ax, (mean_key, sem_key, title) in zip(axes.flat, component_specs):
+        for row in phase_data:
+            color = color_map.get(row["phase"], None)
+            mean = row[mean_key]
+            sem = row[sem_key]
+            label = f"{row['phase']} (n={row['reward_events']})"
+            ax.plot(x, mean, label=label, linewidth=2.0, color=color)
+            ax.fill_between(
+                x,
+                mean - sem,
+                mean + sem,
+                alpha=0.16,
+                color=color,
+            )
+
+        ax.axvline(0, linestyle="--", linewidth=1.2, color="black")
+        ax.axhline(0, linestyle=":", linewidth=1.0, color="gray")
+        ax.set_title(title)
+        ax.set_xlabel("Steps from reward event")
+        ax.grid(alpha=0.25)
+
+    axes[0, 0].set_ylabel("Signal magnitude")
+    axes[1, 0].set_ylabel("Signal magnitude")
+    axes[0, 0].legend(loc="best", frameon=True)
+
+    fig.suptitle("Parkinson RPE components at beginning/middle/end of training", fontsize=13)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
 def main() -> None:
     args = parse_args()
     pre = max(0, int(args.window_pre))
@@ -366,9 +476,12 @@ def main() -> None:
         raise RuntimeError("No valid phases found. Train a model/checkpoints first.")
 
     plot_peth(phase_data, args.out, pre, post)
+    components_out = os.path.join(os.path.dirname(args.out), "rpe_components_parkinsons_begin_mid_end.png")
+    plot_rpe_components(phase_data, components_out, pre, post)
     save_counts(args.counts_out, phase_data)
 
     print(f"Saved PETH-adjacent figure -> {args.out}")
+    print(f"Saved RPE component figure  -> {components_out}")
     print(f"Saved event counts       -> {args.counts_out}")
     for row in phase_data:
         print(

@@ -181,6 +181,28 @@ def _plot_trajectory_grid(
     out_path: str,
 ) -> None:
     import matplotlib.pyplot as plt
+    from matplotlib.collections import LineCollection
+    from matplotlib import colors as mcolors
+
+    def _add_colored_path(ax, path: list[tuple[int, int]]) -> None:
+        if len(path) < 2:
+            return
+
+        ys = np.array([p[0] for p in path], dtype=np.float32)
+        xs = np.array([p[1] for p in path], dtype=np.float32)
+        points = np.column_stack((xs, ys))
+        segments = np.stack([points[:-1], points[1:]], axis=1)
+        values = np.linspace(0.0, 1.0, len(segments), dtype=np.float32)
+        norm = mcolors.Normalize(vmin=0.0, vmax=1.0)
+        lc = LineCollection(
+            segments,
+            cmap="viridis",
+            norm=norm,
+            linewidth=2.0,
+            alpha=0.95,
+        )
+        lc.set_array(values)
+        ax.add_collection(lc)
 
     cols = 5
     rows = 2
@@ -197,7 +219,7 @@ def _plot_trajectory_grid(
         ys = [p[0] for p in path]
         xs = [p[1] for p in path]
 
-        ax.plot(xs, ys, "-o", markersize=2.2, linewidth=1.2, alpha=0.9)
+        _add_colored_path(ax, path)
         ax.scatter(xs[0], ys[0], c="green", s=40, marker="o", label="Start")
         ax.scatter(xs[-1], ys[-1], c="red", s=40, marker="x", label="End")
 
@@ -221,6 +243,11 @@ def _plot_trajectory_grid(
     handles, labels = axes_flat[0].get_legend_handles_labels()
     if handles:
         fig.legend(handles, labels, loc="upper center", ncol=4, frameon=False)
+
+    sm = plt.cm.ScalarMappable(cmap="viridis", norm=plt.Normalize(0.0, 1.0))
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=axes_flat.tolist(), shrink=0.8, pad=0.01)
+    cbar.set_label("Earlier to later steps", rotation=90)
 
     fig.suptitle(title, fontsize=14)
     fig.tight_layout(rect=(0, 0, 1, 0.94))
