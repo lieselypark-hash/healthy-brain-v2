@@ -56,7 +56,8 @@ _ensure_training_runtime()
 import numpy as np
 import torch
 
-from a2c_rpe_model import A2CAgent
+from a2c_rpe_model import A2CAgent as NormalA2CAgent
+from parkinsons_a2c_rpe_model import A2CAgent as ParkinsonsA2CAgent
 from pick_and_place_env import PickAndPlaceEnv
 from results import generate_plots_from_metrics
 
@@ -73,6 +74,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n_steps",     type=int,   default=16,
                         help="Number of steps per A2C update.")
     parser.add_argument("--grid_size",   type=int,   default=5)
+    parser.add_argument("--agent_variant", type=str, default="normal",
+                        choices=("normal", "parkinsons"),
+                        help="Which agent dynamics to train.")
     parser.add_argument("--hidden_dim",  type=int,   default=128)
     parser.add_argument("--lr",          type=float, default=2e-4)
     parser.add_argument("--gamma",       type=float, default=0.99)
@@ -95,6 +99,10 @@ def parse_args() -> argparse.Namespace:
                         help="Lower bound for LR annealing as a fraction of base LR.")
     parser.add_argument("--alpha_tonic", type=float, default=0.005,
                         help="Tonic dopamine EMA coefficient.")
+    parser.add_argument("--surviving_fraction", type=float, default=0.3,
+                        help="Parkinson's dopamine signal scale when transmitted.")
+    parser.add_argument("--transmission_probability", type=float, default=0.3,
+                        help="Probability that a Parkinson's dopamine signal is transmitted.")
     parser.add_argument("--log_interval",   type=int, default=100)
     parser.add_argument("--save_interval",  type=int, default=500)
     parser.add_argument("--save_dir",       type=str, default="checkpoints")
@@ -112,7 +120,14 @@ def parse_args() -> argparse.Namespace:
                         help="Start selecting best policy after this many episodes.")
     parser.add_argument("--no_save",        action="store_true")
     parser.add_argument("--seed",           type=int, default=42)
+    parser.add_argument("--success_time_limit", type=int, default=100,
+                        help="Count success only when placement occurs within this many steps.")
     return parser.parse_args()
+
+
+def _is_timed_success(info: dict, episode_length: int, success_time_limit: int) -> bool:
+    """Return True only when the task is completed within the step limit."""
+    return bool(info.get("object_placed", False)) and int(episode_length) <= int(success_time_limit)
 
 
 def save_training_metrics(path: str, rows: list[dict]) -> None:
@@ -124,6 +139,7 @@ def save_training_metrics(path: str, rows: list[dict]) -> None:
         "episode",
         "episode_reward",
         "episode_length",
+        "completed_task",
         "success",
         "started_task",
         "cumulative_success_rate",
@@ -167,19 +183,28 @@ def train(args: argparse.Namespace) -> tuple[A2CAgent, list, list]:
     state_dim  = env.observation_space.shape[0]
     action_dim = env.action_space.n
 
-    agent = A2CAgent(
-        state_dim=state_dim,
-        action_dim=action_dim,
-        hidden_dim=args.hidden_dim,
-        lr=args.lr,
-        gamma=args.gamma,
-        gae_lambda=args.gae_lambda,
-        entropy_coef=args.entropy_coef,
-        value_coef=args.value_coef,
-        alpha_tonic=args.alpha_tonic,
-        grad_clip_norm=args.grad_clip_norm,
-        policy_clip_eps=args.policy_clip_eps,
-    )
+    agent_cls = NormalA2CAgent if args.agent_variant == "normal" else ParkinsonsA2CAgent
+    agent_kwargs = {
+        "state_dim": state_dim,
+        "action_dim": action_dim,
+        "hidden_dim": args.hidden_dim,
+        "lr": args.lr,
+        "gamma": args.gamma,
+        "gae_lambda": args.gae_lambda,
+        "entropy_coef": args.entropy_coef,
+        "value_coef": args.value_coef,
+        "alpha_tonic": args.alpha_tonic,
+        "grad_clip_norm": args.grad_clip_norm,
+        "policy_clip_eps": args.policy_clip_eps,
+    }
+    if args.agent_variant == "parkinsons":
+        agent_kwargs.update(
+            {
+                "surviving_fraction": args.surviving_fraction,
+                "transmission_probability": args.transmission_probability,
+            }
+        )
+    agent = agent_cls(**agent_kwargs)
 
     if not args.no_save:
         os.makedirs(args.save_dir, exist_ok=True)
@@ -188,9 +213,12 @@ def train(args: argparse.Namespace) -> tuple[A2CAgent, list, list]:
     print("  A2C + RPE Dopamine Model – Pick-and-Place Task")
     print("=" * 60)
     print(f"  Grid size  : {args.grid_size}×{args.grid_size}")
+    print(f"  Agent      : {args.agent_variant}")
+    print("  Task       : default")
     print(f"  State dim  : {state_dim}   Action dim: {action_dim}")
     print(f"  Hidden dim : {args.hidden_dim}")
     print(f"  LR={args.lr}  γ={args.gamma}  λ={args.gae_lambda}  n_steps={args.n_steps}")
+    print(f"  Success criterion: placement within {args.success_time_limit} steps")
     print(
         f"  Entropy: {args.entropy_coef} → {args.entropy_coef_final} "
         f"(adaptive target success {args.schedule_target_success:.2f})"
@@ -286,7 +314,10 @@ def train(args: argparse.Namespace) -> tuple[A2CAgent, list, list]:
         agent.episode_rewards.append(ep_reward)
         agent.episode_lengths.append(ep_length)
 
-        if last_info.get("object_placed", False):
+        completed_task = bool(last_info.get("object_placed", False))
+        timed_success = _is_timed_success(last_info, ep_length, args.success_time_limit)
+
+        if timed_success:
             success_count += 1
             episode_successes.append(1)
         else:
@@ -332,6 +363,7 @@ def train(args: argparse.Namespace) -> tuple[A2CAgent, list, list]:
                 "episode": episode + 1,
                 "episode_reward": float(ep_reward),
                 "episode_length": int(ep_length),
+                "completed_task": int(completed_task),
                 "success": int(episode_successes[-1]),
             "started_task": started_task,
                 "cumulative_success_rate": float(cumulative_success_rate),
@@ -359,7 +391,7 @@ def train(args: argparse.Namespace) -> tuple[A2CAgent, list, list]:
                 f"Ep {episode+1:>5}/{args.n_episodes}  "
                 f"AvgReward: {avg_r:+7.3f}  "
                 f"AvgLen: {avg_l:6.1f}  "
-                f"Success: {s_rate:.3f}  "
+                f"TimedSuccess: {s_rate:.3f}  "
                 f"StartRate: {cumulative_start_rate:.3f}  "
                 f"RollSuccess: {rolling_success:.3f}  "
                 f"LR: {current_lr:.6f}  "
@@ -379,7 +411,7 @@ def train(args: argparse.Namespace) -> tuple[A2CAgent, list, list]:
     print()
     print("=" * 60)
     print(f"  Training complete. Episodes: {args.n_episodes}")
-    print(f"  Overall success rate: {success_count / args.n_episodes:.3f}")
+    print(f"  Overall timed success rate: {success_count / args.n_episodes:.3f}")
     da = agent.dopamine.get_stats()
     print(f"  Final tonic dopamine level: {da['tonic_level']:.4f}")
     print(f"  Start rate: {start_count / args.n_episodes:.3f}")

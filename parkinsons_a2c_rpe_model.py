@@ -177,7 +177,7 @@ def parkinsons_rpe(
     gamma: float,
     value: torch.Tensor,
     next_value: torch.Tensor,
-    surviving_fraction: float = 0.1,
+    surviving_fraction: float = 0.3,
     transmission_probability: float = 0.3,
 ) -> torch.Tensor:
     """Return a Parkinson's-modified TD error signal.
@@ -245,8 +245,9 @@ class A2CAgent:
         alpha_tonic: float = 0.005,
         grad_clip_norm: float = 0.5,
         policy_clip_eps: float = 0.2,
-        surviving_fraction: float = 0.1,
+        surviving_fraction: float = 0.3,
         transmission_probability: float = 0.3,
+        action_reliability: float | None = None,
     ):
 
         self.gamma = gamma
@@ -257,6 +258,13 @@ class A2CAgent:
         self.policy_clip_eps = policy_clip_eps
         self.surviving_fraction = surviving_fraction
         self.transmission_probability = transmission_probability
+        self.action_reliability = float(
+            np.clip(
+                transmission_probability if action_reliability is None else action_reliability,
+                0.0,
+                1.0,
+            )
+        )
 
         self.network = ActorCriticNetwork(state_dim, action_dim, hidden_dim)
         self.optimizer = torch.optim.Adam(self.network.parameters(), lr=lr)
@@ -285,6 +293,12 @@ class A2CAgent:
         state_t = torch.as_tensor(state, dtype=torch.float32).unsqueeze(0)
         with torch.no_grad():
             action_probs, _ = self.network(state_t)
+        if self.action_reliability < 1.0:
+            uniform_probs = torch.full_like(action_probs, 1.0 / action_probs.shape[-1])
+            action_probs = (
+                self.action_reliability * action_probs
+                + (1.0 - self.action_reliability) * uniform_probs
+            )
         dist = torch.distributions.Categorical(action_probs)
         action = dist.sample()
         return int(action.item()), action_probs.squeeze().detach()
@@ -339,34 +353,35 @@ class A2CAgent:
         # ----------------------------------------------------------------
         deltas = rewards_t + self.gamma * next_values - values
 
+        pd_deltas = torch.stack(
+            [
+                parkinsons_rpe(
+                    reward=rewards_t[t],
+                    gamma=self.gamma,
+                    value=values[t],
+                    next_value=next_values[t],
+                    surviving_fraction=self.surviving_fraction,
+                    transmission_probability=self.transmission_probability,
+                )
+                for t in range(len(rewards))
+            ]
+        )
+
         advantages_t = torch.zeros_like(rewards_t)
         gae = torch.tensor(0.0, dtype=torch.float32)
         for t in range(len(rewards) - 1, -1, -1):
             gae = (
-                deltas[t]
+                pd_deltas[t]
                 + self.gamma * self.gae_lambda * (1.0 - dones_t[t]) * gae
             )
             advantages_t[t] = gae
 
         returns_t = advantages_t + values.detach()
-        rpe = deltas
+        rpe = pd_deltas
 
-        # Advantage normalization stabilizes policy-gradient updates.
-        advantages_norm = (advantages_t - advantages_t.mean()) / (
-            advantages_t.std(unbiased=False) + 1e-8
-        )
-
-        # Update dopamine with Parkinson's-modified per-transition RPE.
-        for t in range(len(rewards)):
-            rpe_pd = parkinsons_rpe(
-                reward=rewards_t[t],
-                gamma=self.gamma,
-                value=values[t],
-                next_value=next_values[t],
-                surviving_fraction=self.surviving_fraction,
-                transmission_probability=self.transmission_probability,
-            )
-            self.dopamine.update(float(rpe_pd.detach().item()))
+        # Update dopamine with the same impaired RPE that drives learning.
+        for rpe_value in rpe.detach().cpu().tolist():
+            self.dopamine.update(float(rpe_value))
 
         mean_rpe = float(rpe.detach().mean().item())
         mean_abs_rpe = float(rpe.detach().abs().mean().item())
@@ -382,7 +397,7 @@ class A2CAgent:
             old_probs_t = torch.as_tensor(old_action_probs, dtype=torch.float32)
             old_log_probs = torch.log(old_probs_t.clamp_min(1e-8))
             ratios = torch.exp(log_probs - old_log_probs)
-            adv_detached = advantages_norm.detach()
+            adv_detached = advantages_t.detach()
             unclipped = ratios * adv_detached
             clipped = torch.clamp(
                 ratios,
@@ -392,7 +407,7 @@ class A2CAgent:
             actor_loss = -torch.min(unclipped, clipped).mean()
             approx_kl = float((old_log_probs - log_probs).mean().item())
         else:
-            actor_loss = -(log_probs * advantages_norm.detach()).mean()
+            actor_loss = -(log_probs * advantages_t.detach()).mean()
             approx_kl = 0.0
 
         # ----------------------------------------------------------------

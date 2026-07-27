@@ -5,11 +5,15 @@ Unit tests for the A2C RPE (dopamine) model components:
   - A2CAgent
 """
 
+import copy
+import random
+
 import numpy as np
 import pytest
 import torch
 
 from a2c_rpe_model import A2CAgent, ActorCriticNetwork, DopamineModel
+from parkinsons_a2c_rpe_model import A2CAgent as ParkinsonsA2CAgent
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +220,45 @@ class TestA2CAgentPersistence:
             agent.network.parameters(), agent2.network.parameters()
         ):
             torch.testing.assert_close(p1, p2)
+
+
+class TestParkinsonsA2CAgent:
+    def test_action_reliability_zero_flattens_policy(self):
+        torch.manual_seed(0)
+        agent = ParkinsonsA2CAgent(
+            STATE_DIM,
+            ACTION_DIM,
+            hidden_dim=64,
+            action_reliability=0.0,
+        )
+
+        _, probs = agent.select_action(np.ones(STATE_DIM, dtype=np.float32))
+        expected = torch.full((ACTION_DIM,), 1.0 / ACTION_DIM)
+        torch.testing.assert_close(probs, expected, atol=1e-6, rtol=0.0)
+
+    def test_impaired_rpe_drives_learning_signal(self, sample_batch):
+        random.seed(0)
+        torch.manual_seed(0)
+
+        normal_agent = A2CAgent(STATE_DIM, ACTION_DIM, hidden_dim=64)
+        pd_agent = ParkinsonsA2CAgent(
+            STATE_DIM,
+            ACTION_DIM,
+            hidden_dim=64,
+            surviving_fraction=0.0,
+            transmission_probability=1.0,
+        )
+        pd_agent.network.load_state_dict(copy.deepcopy(normal_agent.network.state_dict()))
+        pd_agent.optimizer.load_state_dict(copy.deepcopy(normal_agent.optimizer.state_dict()))
+
+        normal_info = normal_agent.update(*sample_batch)
+        pd_info = pd_agent.update(*sample_batch)
+
+        assert normal_info["mean_abs_rpe"] > 0.0
+        assert pd_info["mean_rpe"] == pytest.approx(0.0)
+        assert pd_info["mean_abs_rpe"] == pytest.approx(0.0)
+        assert abs(pd_info["actor_loss"]) < abs(normal_info["actor_loss"])
+        assert abs(pd_agent.dopamine.get_stats()["mean_rpe"]) == pytest.approx(0.0)
 
 
 # ---------------------------------------------------------------------------
