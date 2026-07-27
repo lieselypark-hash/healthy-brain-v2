@@ -223,6 +223,21 @@ class TestA2CAgentPersistence:
 
 
 class TestParkinsonsA2CAgent:
+    def test_action_reliability_one_uses_policy_distribution(self):
+        torch.manual_seed(0)
+        agent = ParkinsonsA2CAgent(
+            STATE_DIM,
+            ACTION_DIM,
+            hidden_dim=64,
+            action_reliability=1.0,
+        )
+
+        state = np.ones(STATE_DIM, dtype=np.float32)
+        _, sampled_probs = agent.select_action(state)
+        with torch.no_grad():
+            network_probs, _ = agent.network(torch.as_tensor(state, dtype=torch.float32).unsqueeze(0))
+        torch.testing.assert_close(sampled_probs, network_probs.squeeze(0), atol=1e-6, rtol=0.0)
+
     def test_action_reliability_zero_flattens_policy(self):
         torch.manual_seed(0)
         agent = ParkinsonsA2CAgent(

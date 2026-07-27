@@ -75,7 +75,7 @@ def parse_args() -> argparse.Namespace:
                         help="Number of steps per A2C update.")
     parser.add_argument("--grid_size",   type=int,   default=5)
     parser.add_argument("--agent_variant", type=str, default="normal",
-                        choices=("normal", "parkinsons"),
+                        choices=("normal", "parkinsons", "parkinsons_no_action_reliability"),
                         help="Which agent dynamics to train.")
     parser.add_argument("--hidden_dim",  type=int,   default=128)
     parser.add_argument("--lr",          type=float, default=2e-4)
@@ -197,13 +197,16 @@ def train(args: argparse.Namespace) -> tuple[A2CAgent, list, list]:
         "grad_clip_norm": args.grad_clip_norm,
         "policy_clip_eps": args.policy_clip_eps,
     }
-    if args.agent_variant == "parkinsons":
+    if args.agent_variant in {"parkinsons", "parkinsons_no_action_reliability"}:
         agent_kwargs.update(
             {
                 "surviving_fraction": args.surviving_fraction,
                 "transmission_probability": args.transmission_probability,
             }
         )
+    if args.agent_variant == "parkinsons_no_action_reliability":
+        # Keep Parkinson RPE impairment but remove action-expression noise.
+        agent_kwargs["action_reliability"] = 1.0
     agent = agent_cls(**agent_kwargs)
 
     if not args.no_save:

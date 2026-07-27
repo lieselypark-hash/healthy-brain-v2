@@ -78,6 +78,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--checkpoint", type=str, default="checkpoints/a2c_rpe_final.pt",
                         help="Path to a .pt checkpoint file.")
+    parser.add_argument(
+        "--agent_variant",
+        type=str,
+        default="parkinsons",
+        choices=("parkinsons", "parkinsons_no_action_reliability", "parkinsons_zero_rpe"),
+        help=(
+            "Evaluation-only Parkinson mode: 'parkinsons' uses partial RPE transmission; "
+            "'parkinsons_no_action_reliability' keeps Parkinson RPE impairment but removes action noise; "
+            "'parkinsons_zero_rpe' forces zero RPE and zero action reliability."
+        ),
+    )
     parser.add_argument("--grid_size",  type=int, default=5)
     parser.add_argument("--hidden_dim", type=int, default=128)
     parser.add_argument("--episodes",   type=int, default=500)
@@ -143,15 +154,29 @@ def evaluate(args: argparse.Namespace) -> dict:
     state_dim  = env.observation_space.shape[0]
     action_dim = env.action_space.n
 
-    agent = A2CAgent(
-        state_dim=state_dim,
-        action_dim=action_dim,
-        hidden_dim=args.hidden_dim,
-    )
+    agent_kwargs = {
+        "state_dim": state_dim,
+        "action_dim": action_dim,
+        "hidden_dim": args.hidden_dim,
+    }
+    if args.agent_variant == "parkinsons_zero_rpe":
+        # Evaluation-only severe impairment: no transmitted RPE and fully unreliable action expression.
+        agent_kwargs.update(
+            {
+                "surviving_fraction": 0.0,
+                "transmission_probability": 0.0,
+                "action_reliability": 0.0,
+            }
+        )
+    elif args.agent_variant == "parkinsons_no_action_reliability":
+        # Keep Parkinson RPE pathway, but use policy distribution directly at inference.
+        agent_kwargs["action_reliability"] = 1.0
+    agent = A2CAgent(**agent_kwargs)
 
     if checkpoint_path:
         agent.load(checkpoint_path)
         print(f"Loaded checkpoint (trained with normal A2C RPE): {checkpoint_path}")
+        print(f"Evaluation Parkinson variant: {args.agent_variant}")
     else:
         print("No checkpoint provided – using randomly initialised weights.")
 
