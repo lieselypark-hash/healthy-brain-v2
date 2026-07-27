@@ -82,11 +82,10 @@ def parse_args() -> argparse.Namespace:
         "--agent_variant",
         type=str,
         default="parkinsons",
-        choices=("parkinsons", "parkinsons_no_action_reliability", "parkinsons_zero_rpe"),
+        choices=("parkinsons", "parkinsons_zero_rpe"),
         help=(
             "Evaluation-only Parkinson mode: 'parkinsons' uses partial RPE transmission; "
-            "'parkinsons_no_action_reliability' keeps Parkinson RPE impairment but removes action noise; "
-            "'parkinsons_zero_rpe' forces zero RPE and zero action reliability."
+            "'parkinsons_zero_rpe' forces zero RPE."
         ),
     )
     parser.add_argument("--grid_size",  type=int, default=5)
@@ -160,17 +159,13 @@ def evaluate(args: argparse.Namespace) -> dict:
         "hidden_dim": args.hidden_dim,
     }
     if args.agent_variant == "parkinsons_zero_rpe":
-        # Evaluation-only severe impairment: no transmitted RPE and fully unreliable action expression.
+        # Evaluation-only severe impairment: no transmitted RPE.
         agent_kwargs.update(
             {
                 "surviving_fraction": 0.0,
                 "transmission_probability": 0.0,
-                "action_reliability": 0.0,
             }
         )
-    elif args.agent_variant == "parkinsons_no_action_reliability":
-        # Keep Parkinson RPE pathway, but use policy distribution directly at inference.
-        agent_kwargs["action_reliability"] = 1.0
     agent = A2CAgent(**agent_kwargs)
 
     if checkpoint_path:

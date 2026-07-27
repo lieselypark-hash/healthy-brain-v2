@@ -247,7 +247,10 @@ class A2CAgent:
         policy_clip_eps: float = 0.2,
         surviving_fraction: float = 0.3,
         transmission_probability: float = 0.3,
-        action_reliability: float | None = None,
+        movement_execution_probability: float = 0.55,
+        freeze_episode_probability: float = 0.12,
+        freeze_min_steps: int = 4,
+        freeze_max_steps: int = 12,
     ):
 
         self.gamma = gamma
@@ -258,13 +261,15 @@ class A2CAgent:
         self.policy_clip_eps = policy_clip_eps
         self.surviving_fraction = surviving_fraction
         self.transmission_probability = transmission_probability
-        self.action_reliability = float(
-            np.clip(
-                transmission_probability if action_reliability is None else action_reliability,
-                0.0,
-                1.0,
-            )
+        self.movement_execution_probability = float(
+            np.clip(movement_execution_probability, 0.0, 1.0)
         )
+        self.freeze_episode_probability = float(
+            np.clip(freeze_episode_probability, 0.0, 1.0)
+        )
+        self.freeze_min_steps = max(1, int(freeze_min_steps))
+        self.freeze_max_steps = max(self.freeze_min_steps, int(freeze_max_steps))
+        self._freeze_steps_remaining = 0
 
         self.network = ActorCriticNetwork(state_dim, action_dim, hidden_dim)
         self.optimizer = torch.optim.Adam(self.network.parameters(), lr=lr)
@@ -293,15 +298,33 @@ class A2CAgent:
         state_t = torch.as_tensor(state, dtype=torch.float32).unsqueeze(0)
         with torch.no_grad():
             action_probs, _ = self.network(state_t)
-        if self.action_reliability < 1.0:
-            uniform_probs = torch.full_like(action_probs, 1.0 / action_probs.shape[-1])
-            action_probs = (
-                self.action_reliability * action_probs
-                + (1.0 - self.action_reliability) * uniform_probs
-            )
         dist = torch.distributions.Categorical(action_probs)
         action = dist.sample()
-        return int(action.item()), action_probs.squeeze().detach()
+        action_id = int(action.item())
+
+        # Motor impairment layer: keep decision policy intact, but stochastically
+        # block movement execution to model random slowness and freeze episodes.
+        if action_id in (0, 1, 2, 3):
+            if self._freeze_steps_remaining > 0:
+                self._freeze_steps_remaining -= 1
+                action_id = self._stall_action_from_state(state)
+            else:
+                if random.random() < self.freeze_episode_probability:
+                    self._freeze_steps_remaining = random.randint(
+                        self.freeze_min_steps,
+                        self.freeze_max_steps,
+                    ) - 1
+                    action_id = self._stall_action_from_state(state)
+                elif random.random() > self.movement_execution_probability:
+                    action_id = self._stall_action_from_state(state)
+
+        return action_id, action_probs.squeeze().detach()
+
+    def _stall_action_from_state(self, state: np.ndarray) -> int:
+        """Choose a mostly invalid non-movement action to simulate no movement."""
+        holding = bool(float(state[4]) >= 0.5)
+        # PLACE is invalid when not holding; PICK is invalid when already holding.
+        return 4 if holding else 5
 
     # ------------------------------------------------------------------
     # Training

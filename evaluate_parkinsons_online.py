@@ -87,11 +87,10 @@ def parse_args() -> argparse.Namespace:
         "--agent_variant",
         type=str,
         default="parkinsons",
-        choices=("parkinsons", "parkinsons_no_action_reliability", "parkinsons_zero_rpe"),
+        choices=("parkinsons", "parkinsons_zero_rpe"),
         help=(
             "Parkinson mode: 'parkinsons' uses partial RPE transmission; "
-            "'parkinsons_no_action_reliability' keeps Parkinson RPE impairment but removes action noise; "
-            "'parkinsons_zero_rpe' forces zero RPE and zero action reliability."
+            "'parkinsons_zero_rpe' forces zero RPE."
         ),
     )
     parser.add_argument("--grid_size", type=int, default=5)
@@ -213,11 +212,8 @@ def evaluate_online(args: argparse.Namespace) -> dict:
             {
                 "surviving_fraction": 0.0,
                 "transmission_probability": 0.0,
-                "action_reliability": 0.0,
             }
         )
-    elif args.agent_variant == "parkinsons_no_action_reliability":
-        agent_kwargs["action_reliability"] = 1.0
 
     agent = A2CAgent(**agent_kwargs)
     agent.load(checkpoint_path)

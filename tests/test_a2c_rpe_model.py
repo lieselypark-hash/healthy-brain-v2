@@ -223,13 +223,14 @@ class TestA2CAgentPersistence:
 
 
 class TestParkinsonsA2CAgent:
-    def test_action_reliability_one_uses_policy_distribution(self):
+    def test_select_action_returns_unmixed_policy_probs(self):
         torch.manual_seed(0)
         agent = ParkinsonsA2CAgent(
             STATE_DIM,
             ACTION_DIM,
             hidden_dim=64,
-            action_reliability=1.0,
+            movement_execution_probability=0.0,
+            freeze_episode_probability=0.0,
         )
 
         state = np.ones(STATE_DIM, dtype=np.float32)
@@ -238,18 +239,52 @@ class TestParkinsonsA2CAgent:
             network_probs, _ = agent.network(torch.as_tensor(state, dtype=torch.float32).unsqueeze(0))
         torch.testing.assert_close(sampled_probs, network_probs.squeeze(0), atol=1e-6, rtol=0.0)
 
-    def test_action_reliability_zero_flattens_policy(self):
+    def test_movement_slowness_blocks_movement_action(self):
         torch.manual_seed(0)
         agent = ParkinsonsA2CAgent(
             STATE_DIM,
             ACTION_DIM,
             hidden_dim=64,
-            action_reliability=0.0,
+            movement_execution_probability=0.0,
+            freeze_episode_probability=0.0,
         )
 
-        _, probs = agent.select_action(np.ones(STATE_DIM, dtype=np.float32))
-        expected = torch.full((ACTION_DIM,), 1.0 / ACTION_DIM)
-        torch.testing.assert_close(probs, expected, atol=1e-6, rtol=0.0)
+        with torch.no_grad():
+            for p in agent.network.parameters():
+                p.zero_()
+            agent.network.actor_head[0].bias[0] = 10.0  # force action 0 (UP)
+
+        state = np.zeros(STATE_DIM, dtype=np.float32)
+        action, _ = agent.select_action(state)
+        assert action == 5  # PICK is invalid when not holding, so movement stalls
+
+    def test_freeze_episode_blocks_multiple_steps(self):
+        torch.manual_seed(0)
+        random.seed(0)
+        agent = ParkinsonsA2CAgent(
+            STATE_DIM,
+            ACTION_DIM,
+            hidden_dim=64,
+            movement_execution_probability=1.0,
+            freeze_episode_probability=1.0,
+            freeze_min_steps=3,
+            freeze_max_steps=3,
+        )
+
+        with torch.no_grad():
+            for p in agent.network.parameters():
+                p.zero_()
+            agent.network.actor_head[0].bias[0] = 10.0  # force action 0 (UP)
+
+        state = np.zeros(STATE_DIM, dtype=np.float32)
+        a1, _ = agent.select_action(state)
+        agent.freeze_episode_probability = 0.0  # avoid starting a new freeze episode
+        a2, _ = agent.select_action(state)
+        a3, _ = agent.select_action(state)
+        a4, _ = agent.select_action(state)
+
+        assert (a1, a2, a3) == (5, 5, 5)
+        assert a4 == 0
 
     def test_impaired_rpe_drives_learning_signal(self, sample_batch):
         random.seed(0)
