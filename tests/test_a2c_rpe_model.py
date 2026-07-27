@@ -5,11 +5,15 @@ Unit tests for the A2C RPE (dopamine) model components:
   - A2CAgent
 """
 
+import copy
+import random
+
 import numpy as np
 import pytest
 import torch
 
 from a2c_rpe_model import A2CAgent, ActorCriticNetwork, DopamineModel
+from parkinsons_a2c_rpe_model import A2CAgent as ParkinsonsA2CAgent
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +220,95 @@ class TestA2CAgentPersistence:
             agent.network.parameters(), agent2.network.parameters()
         ):
             torch.testing.assert_close(p1, p2)
+
+
+class TestParkinsonsA2CAgent:
+    def test_select_action_returns_unmixed_policy_probs(self):
+        torch.manual_seed(0)
+        agent = ParkinsonsA2CAgent(
+            STATE_DIM,
+            ACTION_DIM,
+            hidden_dim=64,
+            movement_execution_probability=0.0,
+            freeze_episode_probability=0.0,
+        )
+
+        state = np.ones(STATE_DIM, dtype=np.float32)
+        _, sampled_probs = agent.select_action(state)
+        with torch.no_grad():
+            network_probs, _ = agent.network(torch.as_tensor(state, dtype=torch.float32).unsqueeze(0))
+        torch.testing.assert_close(sampled_probs, network_probs.squeeze(0), atol=1e-6, rtol=0.0)
+
+    def test_movement_slowness_blocks_movement_action(self):
+        torch.manual_seed(0)
+        agent = ParkinsonsA2CAgent(
+            STATE_DIM,
+            ACTION_DIM,
+            hidden_dim=64,
+            movement_execution_probability=0.0,
+            freeze_episode_probability=0.0,
+        )
+
+        with torch.no_grad():
+            for p in agent.network.parameters():
+                p.zero_()
+            agent.network.actor_head[0].bias[0] = 10.0  # force action 0 (UP)
+
+        state = np.zeros(STATE_DIM, dtype=np.float32)
+        action, _ = agent.select_action(state)
+        assert action == 5  # PICK is invalid when not holding, so movement stalls
+
+    def test_freeze_episode_blocks_multiple_steps(self):
+        torch.manual_seed(0)
+        random.seed(0)
+        agent = ParkinsonsA2CAgent(
+            STATE_DIM,
+            ACTION_DIM,
+            hidden_dim=64,
+            movement_execution_probability=1.0,
+            freeze_episode_probability=1.0,
+            freeze_min_steps=3,
+            freeze_max_steps=3,
+        )
+
+        with torch.no_grad():
+            for p in agent.network.parameters():
+                p.zero_()
+            agent.network.actor_head[0].bias[0] = 10.0  # force action 0 (UP)
+
+        state = np.zeros(STATE_DIM, dtype=np.float32)
+        a1, _ = agent.select_action(state)
+        agent.freeze_episode_probability = 0.0  # avoid starting a new freeze episode
+        a2, _ = agent.select_action(state)
+        a3, _ = agent.select_action(state)
+        a4, _ = agent.select_action(state)
+
+        assert (a1, a2, a3) == (5, 5, 5)
+        assert a4 == 0
+
+    def test_impaired_rpe_drives_learning_signal(self, sample_batch):
+        random.seed(0)
+        torch.manual_seed(0)
+
+        normal_agent = A2CAgent(STATE_DIM, ACTION_DIM, hidden_dim=64)
+        pd_agent = ParkinsonsA2CAgent(
+            STATE_DIM,
+            ACTION_DIM,
+            hidden_dim=64,
+            surviving_fraction=0.0,
+            transmission_probability=1.0,
+        )
+        pd_agent.network.load_state_dict(copy.deepcopy(normal_agent.network.state_dict()))
+        pd_agent.optimizer.load_state_dict(copy.deepcopy(normal_agent.optimizer.state_dict()))
+
+        normal_info = normal_agent.update(*sample_batch)
+        pd_info = pd_agent.update(*sample_batch)
+
+        assert normal_info["mean_abs_rpe"] > 0.0
+        assert pd_info["mean_rpe"] == pytest.approx(0.0)
+        assert pd_info["mean_abs_rpe"] == pytest.approx(0.0)
+        assert abs(pd_info["actor_loss"]) < abs(normal_info["actor_loss"])
+        assert abs(pd_agent.dopamine.get_stats()["mean_rpe"]) == pytest.approx(0.0)
 
 
 # ---------------------------------------------------------------------------

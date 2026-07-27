@@ -13,6 +13,7 @@ import argparse
 import csv
 import importlib.util
 import os
+import subprocess
 import sys
 
 
@@ -45,10 +46,63 @@ def parse_args() -> argparse.Namespace:
         help="Window size for reward rolling mean.",
     )
     parser.add_argument(
+        "--success_time_limit",
+        type=int,
+        default=100,
+        help="Count success only when completion occurs within this many steps.",
+    )
+    parser.add_argument(
         "--title_prefix",
         type=str,
         default="",
         help="Optional title prefix, e.g. 'Training' or 'Evaluation'.",
+    )
+    parser.add_argument(
+        "--normal_eval_metrics",
+        type=str,
+        default="results/evaluation_normal_metrics.csv",
+        help="Normal-model evaluation metrics CSV path.",
+    )
+    parser.add_argument(
+        "--parkinsons_eval_metrics",
+        type=str,
+        default="results/evaluation_parkinsons_metrics.csv",
+        help="Parkinson-model evaluation metrics CSV path.",
+    )
+    parser.add_argument(
+        "--eval_success_compare_out",
+        type=str,
+        default="results/evaluation_success_comparison.png",
+        help="Output path for normal-vs-Parkinson evaluation success comparison.",
+    )
+    parser.add_argument(
+        "--eval_reward_compare_out",
+        type=str,
+        default="results/evaluation_reward_comparison.png",
+        help="Output path for normal-vs-Parkinson evaluation reward comparison.",
+    )
+    parser.add_argument(
+        "--no_peth",
+        action="store_true",
+        help="Disable generation of beginning/middle/end PETH plots.",
+    )
+    parser.add_argument(
+        "--peth_probe_episodes",
+        type=int,
+        default=200,
+        help="Probe episodes used per phase for PETH generation.",
+    )
+    parser.add_argument(
+        "--peth_window_pre",
+        type=int,
+        default=10,
+        help="Steps before event for PETH windows.",
+    )
+    parser.add_argument(
+        "--peth_window_post",
+        type=int,
+        default=20,
+        help="Steps after event for PETH windows.",
     )
     return parser.parse_args()
 
@@ -69,10 +123,26 @@ def ensure_plot_runtime() -> None:
         os.execve(venv_python, [venv_python, os.path.abspath(__file__), *sys.argv[1:]], env)
 
 
-def load_metrics(path: str) -> dict:
+def _rolling_binary_rate(values: list[float], window: int) -> list[float]:
+    if window <= 1:
+        return [float(v) for v in values]
+    out = []
+    running_sum = 0.0
+    for idx, val in enumerate(values):
+        running_sum += val
+        if idx >= window:
+            running_sum -= values[idx - window]
+        denom = min(idx + 1, window)
+        out.append(running_sum / denom)
+    return out
+
+
+def load_metrics(path: str, success_time_limit: int | None = None) -> dict:
     episodes = []
     rewards = []
+    lengths = []
     success_values = []
+    completion_values = []
     started_values = []
     cumulative_success = []
     rolling_success = []
@@ -85,23 +155,44 @@ def load_metrics(path: str) -> dict:
             episodes.append(int(row["episode"]))
             reward_value = row.get("episode_reward", row.get("reward", "0"))
             rewards.append(float(reward_value))
+            lengths.append(int(float(row.get("episode_length", "0") or 0)))
 
-            if "success" in row and row["success"] != "":
+            if "completed_task" in row and row["completed_task"] != "":
+                completion_values.append(float(row["completed_task"]))
+            elif "success" in row and row["success"] != "":
+                completion_values.append(float(row["success"]))
+            else:
+                completion_values.append(0.0)
+
+            if success_time_limit is not None:
+                timed_success = 1.0 if (
+                    completion_values[-1] >= 0.5 and lengths[-1] <= int(success_time_limit)
+                ) else 0.0
+                success_values.append(timed_success)
+            elif "success" in row and row["success"] != "":
                 success_values.append(float(row["success"]))
             else:
-                success_values.append(0.0)
+                success_values.append(completion_values[-1])
 
             if "started_task" in row and row["started_task"] != "":
                 started_values.append(float(row["started_task"]))
             else:
                 started_values.append(0.0)
 
-            if "cumulative_success_rate" in row and row["cumulative_success_rate"] != "":
+            if (
+                success_time_limit is None
+                and "cumulative_success_rate" in row
+                and row["cumulative_success_rate"] != ""
+            ):
                 cumulative_success.append(float(row["cumulative_success_rate"]))
             else:
                 cumulative_success.append(float(sum(success_values) / len(success_values)))
 
-            if "rolling_success_rate" in row and row["rolling_success_rate"] != "":
+            if (
+                success_time_limit is None
+                and "rolling_success_rate" in row
+                and row["rolling_success_rate"] != ""
+            ):
                 rolling_success.append(float(row["rolling_success_rate"]))
             else:
                 rolling_success.append(float(cumulative_success[-1]))
@@ -119,10 +210,16 @@ def load_metrics(path: str) -> dict:
     if not episodes:
         raise ValueError("Metrics file is empty; no episodes to plot.")
 
+    if success_time_limit is not None:
+        cumulative_success = _rolling_binary_rate(success_values, window=len(success_values))
+        rolling_success = _rolling_binary_rate(success_values, window=50)
+
     return {
         "episodes": episodes,
         "rewards": rewards,
+        "episode_length": lengths,
         "success": success_values,
+        "completed_task": completion_values,
         "started": started_values,
         "cumulative_success": cumulative_success,
         "rolling_success": rolling_success,
@@ -145,7 +242,12 @@ def _rolling_mean(values: list[float], window: int) -> list[float]:
     return out
 
 
-def plot_success(metrics: dict, out_path: str, title_prefix: str = "") -> None:
+def plot_success(
+    metrics: dict,
+    out_path: str,
+    title_prefix: str = "",
+    success_label: str = "Success",
+) -> None:
     mpl_config_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".mplconfig")
     os.makedirs(mpl_config_dir, exist_ok=True)
     os.environ.setdefault("MPLCONFIGDIR", mpl_config_dir)
@@ -155,13 +257,13 @@ def plot_success(metrics: dict, out_path: str, title_prefix: str = "") -> None:
     ax.plot(
         metrics["episodes"],
         metrics["cumulative_success"],
-        label="Cumulative success rate",
+        label=f"Cumulative {success_label.lower()} rate",
         linewidth=2.0,
     )
     ax.plot(
         metrics["episodes"],
         metrics["rolling_success"],
-        label="Rolling success rate",
+        label=f"Rolling {success_label.lower()} rate",
         linewidth=1.8,
         alpha=0.9,
     )
@@ -179,10 +281,10 @@ def plot_success(metrics: dict, out_path: str, title_prefix: str = "") -> None:
         linewidth=1.4,
         alpha=0.75,
     )
-    ax.set_ylabel("Success rate")
+    ax.set_ylabel(f"{success_label} rate")
     ax.set_xlabel("Episode")
     ax.set_ylim(0.0, 1.0)
-    base_title = "Success Rate Over Episodes"
+    base_title = f"{success_label} Rate Over Episodes"
     ax.set_title(f"{title_prefix} {base_title}".strip())
     ax.grid(alpha=0.3)
     ax.legend()
@@ -237,8 +339,9 @@ def generate_plots_from_metrics(
     reward_out: str,
     rolling_window: int = 50,
     title_prefix: str = "",
+    success_time_limit: int | None = None,
 ) -> tuple[str, str]:
-    metrics = load_metrics(metrics_path)
+    metrics = load_metrics(metrics_path, success_time_limit=success_time_limit)
     success_dir = os.path.dirname(success_out)
     reward_dir = os.path.dirname(reward_out)
     if success_dir:
@@ -246,13 +349,111 @@ def generate_plots_from_metrics(
     if reward_dir:
         os.makedirs(reward_dir, exist_ok=True)
 
-    plot_success(metrics, success_out, title_prefix=title_prefix)
+    success_label = "Timed Success" if success_time_limit is not None else "Success"
+    plot_success(
+        metrics,
+        success_out,
+        title_prefix=title_prefix,
+        success_label=success_label,
+    )
     plot_reward(
         metrics,
         reward_out,
         rolling_window=rolling_window,
         title_prefix=title_prefix,
     )
+    return success_out, reward_out
+
+
+def generate_peth_outputs(
+    probe_episodes: int,
+    window_pre: int,
+    window_post: int,
+) -> list[str]:
+    """Generate normal and Parkinson begin/mid/end PETH outputs."""
+    scripts = [
+        "peth_rpe.py",
+        "peth_rpe_parkinsons.py",
+        "peth_rpe_compare.py",
+    ]
+    saved = []
+    for script in scripts:
+        cmd = [
+            sys.executable,
+            script,
+            "--probe_episodes",
+            str(max(1, probe_episodes)),
+            "--window_pre",
+            str(max(0, window_pre)),
+            "--window_post",
+            str(max(1, window_post)),
+        ]
+        subprocess.run(cmd, check=True)
+        saved.append(script)
+    return saved
+
+
+def generate_evaluation_comparison_plots(
+    normal_metrics_path: str,
+    parkinsons_metrics_path: str,
+    success_out: str,
+    reward_out: str,
+    rolling_window: int = 25,
+    success_time_limit: int | None = None,
+) -> tuple[str, str] | None:
+    """Generate evaluation success/reward comparisons for normal vs Parkinson models."""
+    if not (os.path.exists(normal_metrics_path) and os.path.exists(parkinsons_metrics_path)):
+        return None
+
+    normal = load_metrics(normal_metrics_path, success_time_limit=success_time_limit)
+    parkinson = load_metrics(parkinsons_metrics_path, success_time_limit=success_time_limit)
+
+    mpl_config_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".mplconfig")
+    os.makedirs(mpl_config_dir, exist_ok=True)
+    os.environ.setdefault("MPLCONFIGDIR", mpl_config_dir)
+    import matplotlib.pyplot as plt
+
+    success_dir = os.path.dirname(success_out)
+    reward_dir = os.path.dirname(reward_out)
+    if success_dir:
+        os.makedirs(success_dir, exist_ok=True)
+    if reward_dir:
+        os.makedirs(reward_dir, exist_ok=True)
+
+    # Success comparison
+    fig, ax = plt.subplots(1, 1, figsize=(10, 4.8))
+    ax.plot(normal["episodes"], normal["cumulative_success"], linewidth=2.0, label="Normal cumulative")
+    ax.plot(normal["episodes"], normal["rolling_success"], linewidth=1.6, alpha=0.9, label="Normal rolling")
+    ax.plot(parkinson["episodes"], parkinson["cumulative_success"], linewidth=2.0, label="Parkinson cumulative")
+    ax.plot(parkinson["episodes"], parkinson["rolling_success"], linewidth=1.6, alpha=0.9, label="Parkinson rolling")
+    ax.set_xlabel("Episode")
+    success_label = "Timed success" if success_time_limit is not None else "Success"
+    ax.set_ylabel(f"{success_label} rate")
+    ax.set_ylim(0.0, 1.0)
+    ax.set_title(f"Evaluation {success_label}: Normal vs Parkinson")
+    ax.grid(alpha=0.3)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(success_out, dpi=160)
+    plt.close(fig)
+
+    # Reward comparison
+    n_sm = _rolling_mean(normal["rewards"], max(1, rolling_window))
+    p_sm = _rolling_mean(parkinson["rewards"], max(1, rolling_window))
+    fig, ax = plt.subplots(1, 1, figsize=(10, 4.8))
+    ax.plot(normal["episodes"], normal["rewards"], linewidth=1.0, alpha=0.25, label="Normal reward")
+    ax.plot(normal["episodes"], n_sm, linewidth=2.0, label=f"Normal rolling ({rolling_window})")
+    ax.plot(parkinson["episodes"], parkinson["rewards"], linewidth=1.0, alpha=0.25, label="Parkinson reward")
+    ax.plot(parkinson["episodes"], p_sm, linewidth=2.0, label=f"Parkinson rolling ({rolling_window})")
+    ax.set_xlabel("Episode")
+    ax.set_ylabel("Reward")
+    ax.set_title("Evaluation Reward: Normal vs Parkinson")
+    ax.grid(alpha=0.3)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(reward_out, dpi=160)
+    plt.close(fig)
+
     return success_out, reward_out
 
 
@@ -268,9 +469,36 @@ def main() -> None:
         reward_out=args.reward_out,
         rolling_window=args.rolling_window,
         title_prefix=args.title_prefix,
+        success_time_limit=args.success_time_limit,
     )
     print(f"Saved success plot → {success_path}")
     print(f"Saved reward plot → {reward_path}")
+
+    if not args.no_peth:
+        generate_peth_outputs(
+            probe_episodes=args.peth_probe_episodes,
+            window_pre=args.peth_window_pre,
+            window_post=args.peth_window_post,
+        )
+        print("Saved PETH plots → results/rpe_peth_begin_mid_end.png")
+        print("Saved PETH counts → results/rpe_peth_event_counts.csv")
+        print("Saved Parkinson PETH plots → results/rpe_peth_parkinsons_begin_mid_end.png")
+        print("Saved Parkinson PETH counts → results/rpe_peth_parkinsons_event_counts.csv")
+        print("Saved PETH comparison plot → results/rpe_peth_model_comparison.png")
+
+    eval_compare = generate_evaluation_comparison_plots(
+        normal_metrics_path=args.normal_eval_metrics,
+        parkinsons_metrics_path=args.parkinsons_eval_metrics,
+        success_out=args.eval_success_compare_out,
+        reward_out=args.eval_reward_compare_out,
+        rolling_window=max(10, args.rolling_window // 2),
+        success_time_limit=args.success_time_limit,
+    )
+    if eval_compare is not None:
+        print(f"Saved evaluation success comparison → {eval_compare[0]}")
+        print(f"Saved evaluation reward comparison → {eval_compare[1]}")
+    else:
+        print("Skipped evaluation model comparison: missing normal or Parkinson evaluation metrics CSV.")
 
 
 if __name__ == "__main__":

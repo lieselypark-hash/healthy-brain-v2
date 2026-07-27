@@ -1,6 +1,25 @@
 # healthy-brain-v2
 healthy brain
 
+## Model Difference Table
+
+| Component | Normal Model | Parkinson Model | Parkinson Zero-RPE (Evaluation Only) |
+|---|---|---|---|
+| Agent implementation | a2c_rpe_model.A2CAgent | parkinsons_a2c_rpe_model.A2CAgent | parkinsons_a2c_rpe_model.A2CAgent |
+| Network architecture | Shared MLP trunk + actor/critic heads | Same as normal | Same as Parkinson |
+| TD/RPE signal used for learning | Raw TD delta: r + gamma * V(next) - V(curr) | Parkinson-impaired TD delta (stochastic transmission and scaling) | Forced to zero (via surviving_fraction=0, transmission_probability=0) |
+| Advantage path in actor update | Normalized advantages | Unnormalized impaired advantages | Not used for training (evaluation only) |
+| Motor execution | Deterministic action execution | Random slowness and freeze episodes can block movement actions | Same motor behavior as Parkinson |
+| Key impairment parameters | None | surviving_fraction, transmission_probability, movement_execution_probability, freeze_episode_probability, freeze_min_steps, freeze_max_steps | surviving_fraction=0.0, transmission_probability=0.0 |
+| Training availability | Yes (train.py --agent_variant normal) | Yes (train.py --agent_variant parkinsons) | No |
+| Evaluation availability | Via evaluate.py | Via evaluate_parkinsons.py --agent_variant parkinsons | Via evaluate_parkinsons.py --agent_variant parkinsons_zero_rpe |
+
+Notes:
+
+- Parkinson and normal share the same observation space, action space, and network shape.
+- The main differences are in how RPE is transformed and whether movement execution is intermittently blocked.
+- The zero-RPE variant is intentionally evaluation-only to simulate an extreme impairment without changing training.
+
 ## Training and Evaluation Results
 
 After training, metrics and plots are saved automatically:

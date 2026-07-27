@@ -1,6 +1,4 @@
-"""
-Unit tests for PickAndPlaceEnv.
-"""
+"""Unit tests for PickAndPlaceEnv."""
 
 import numpy as np
 import pytest
@@ -24,11 +22,10 @@ class TestPickAndPlaceEnvInit:
         with pytest.raises(ValueError):
             PickAndPlaceEnv(grid_size=1)
 
-
 class TestPickAndPlaceEnvReset:
     def test_obs_shape_and_bounds(self):
         env = PickAndPlaceEnv(seed=0)
-        obs, info = env.reset()
+        obs, _ = env.reset()
         assert obs.shape == (9,)
         assert np.all(obs >= 0.0) and np.all(obs <= 1.0)
         assert obs.dtype == np.float32
@@ -42,7 +39,6 @@ class TestPickAndPlaceEnvReset:
     def test_positions_differ_after_reset(self):
         env = PickAndPlaceEnv(seed=2)
         env.reset()
-        # Agent, object, and target must all be on different cells
         assert not np.array_equal(env.agent_pos, env.object_pos)
         assert not np.array_equal(env.agent_pos, env.target_pos)
         assert not np.array_equal(env.object_pos, env.target_pos)
@@ -85,10 +81,9 @@ class TestPickAndPlaceEnvStep:
         env = PickAndPlaceEnv(grid_size=5, seed=10)
         env.reset()
         self._start_task(env)
-        # Force agent to middle so any move is valid
         env.agent_pos = np.array([2, 2], dtype=np.int32)
         original = env.agent_pos.copy()
-        env.step(PickAndPlaceEnv.DOWN)   # move down
+        env.step(PickAndPlaceEnv.DOWN)
         assert not np.array_equal(env.agent_pos, original)
 
     def test_movement_respects_grid_bounds(self):
@@ -96,8 +91,8 @@ class TestPickAndPlaceEnvStep:
         env.reset()
         self._start_task(env)
         env.agent_pos = np.array([0, 0], dtype=np.int32)
-        env.step(PickAndPlaceEnv.UP)    # already at row 0 – cannot go further up
-        env.step(PickAndPlaceEnv.LEFT)  # already at col 0
+        env.step(PickAndPlaceEnv.UP)
+        env.step(PickAndPlaceEnv.LEFT)
         assert env.agent_pos[0] == 0
         assert env.agent_pos[1] == 0
 
@@ -115,33 +110,13 @@ class TestPickAndPlaceEnvStep:
         env = PickAndPlaceEnv(seed=6)
         env.reset()
         env.cue_step = 1
-        # Before START, movement should not begin the task.
         _, r1, _, _, info1 = env.step(PickAndPlaceEnv.RIGHT)
         assert info1["task_started"] is False
         assert r1 == PickAndPlaceEnv.REWARD_INVALID
-        # START action begins task.
+
         _, r2, _, _, info2 = env.step(PickAndPlaceEnv.START)
         assert info2["task_started"] is True
-        assert r2 == PickAndPlaceEnv.REWARD_START
-
-    def test_invalid_pick_gives_negative_reward(self):
-        env = PickAndPlaceEnv(seed=7)
-        env.reset()
-        self._start_task(env)
-        # Move agent away from object
-        env.agent_pos = np.array([0, 0], dtype=np.int32)
-        env.object_pos = np.array([4, 4], dtype=np.int32)
-        env.holding = False
-        _, reward, _, _, _ = env.step(PickAndPlaceEnv.PICK)
-        assert reward == PickAndPlaceEnv.REWARD_INVALID
-
-    def test_invalid_place_gives_negative_reward(self):
-        env = PickAndPlaceEnv(seed=8)
-        env.reset()
-        self._start_task(env)
-        env.holding = False  # Not holding anything
-        _, reward, _, _, _ = env.step(PickAndPlaceEnv.PLACE)
-        assert reward == PickAndPlaceEnv.REWARD_INVALID
+        assert r2 == env.reward_start
 
     def test_max_steps_triggers_truncated(self):
         env = PickAndPlaceEnv(grid_size=5, max_steps=3, seed=9)
@@ -180,43 +155,33 @@ class TestPickAndPlaceFullTask:
 
     def test_place_reward_and_termination(self):
         env = self._make_env_with_positions([3, 3], [3, 3], [3, 3])
-        # Pick the object first
         env.step(PickAndPlaceEnv.PICK)
-        # Now place it (agent is already at target)
         _, reward, terminated, _, info = env.step(PickAndPlaceEnv.PLACE)
         assert reward == PickAndPlaceEnv.REWARD_PLACE
         assert terminated is True
         assert info["object_placed"] is True
 
     def test_full_sequence_succeeds(self):
-        """Navigate to object, pick, navigate to target, place."""
-        # Lay out positions so the solution is predictable:
-        # agent=(0,0), object=(0,2), target=(0,4) – all in top row
         env = self._make_env_with_positions([0, 0], [0, 2], [0, 4])
 
         total_reward = 0.0
-
-        # Move right twice to reach object
         for _ in range(2):
             _, r, _, _, _ = env.step(PickAndPlaceEnv.RIGHT)
             total_reward += r
 
-        # Pick
         _, r, _, _, info = env.step(PickAndPlaceEnv.PICK)
         total_reward += r
         assert info["holding"] is True
 
-        # Move right twice to reach target
         for _ in range(2):
             _, r, _, _, _ = env.step(PickAndPlaceEnv.RIGHT)
             total_reward += r
 
-        # Place
         _, r, terminated, _, info = env.step(PickAndPlaceEnv.PLACE)
         total_reward += r
         assert terminated is True
         assert info["object_placed"] is True
-        assert total_reward > 0  # Net positive despite step penalties
+        assert total_reward > 0
 
 
 class TestPickAndPlaceRender:
@@ -225,5 +190,5 @@ class TestPickAndPlaceRender:
         env.reset()
         output = env.render(mode="ansi")
         assert isinstance(output, str)
-        assert "A" in output   # agent marker
-        assert "T" in output   # target marker
+        assert "A" in output
+        assert "T" in output

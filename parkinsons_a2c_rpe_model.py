@@ -177,7 +177,7 @@ def parkinsons_rpe(
     gamma: float,
     value: torch.Tensor,
     next_value: torch.Tensor,
-    surviving_fraction: float = 0.1,
+    surviving_fraction: float = 0.3,
     transmission_probability: float = 0.3,
 ) -> torch.Tensor:
     """Return a Parkinson's-modified TD error signal.
@@ -245,8 +245,12 @@ class A2CAgent:
         alpha_tonic: float = 0.005,
         grad_clip_norm: float = 0.5,
         policy_clip_eps: float = 0.2,
-        surviving_fraction: float = 0.1,
+        surviving_fraction: float = 0.3,
         transmission_probability: float = 0.3,
+        movement_execution_probability: float = 0.55,
+        freeze_episode_probability: float = 0.12,
+        freeze_min_steps: int = 4,
+        freeze_max_steps: int = 12,
     ):
 
         self.gamma = gamma
@@ -257,6 +261,15 @@ class A2CAgent:
         self.policy_clip_eps = policy_clip_eps
         self.surviving_fraction = surviving_fraction
         self.transmission_probability = transmission_probability
+        self.movement_execution_probability = float(
+            np.clip(movement_execution_probability, 0.0, 1.0)
+        )
+        self.freeze_episode_probability = float(
+            np.clip(freeze_episode_probability, 0.0, 1.0)
+        )
+        self.freeze_min_steps = max(1, int(freeze_min_steps))
+        self.freeze_max_steps = max(self.freeze_min_steps, int(freeze_max_steps))
+        self._freeze_steps_remaining = 0
 
         self.network = ActorCriticNetwork(state_dim, action_dim, hidden_dim)
         self.optimizer = torch.optim.Adam(self.network.parameters(), lr=lr)
@@ -287,7 +300,31 @@ class A2CAgent:
             action_probs, _ = self.network(state_t)
         dist = torch.distributions.Categorical(action_probs)
         action = dist.sample()
-        return int(action.item()), action_probs.squeeze().detach()
+        action_id = int(action.item())
+
+        # Motor impairment layer: keep decision policy intact, but stochastically
+        # block movement execution to model random slowness and freeze episodes.
+        if action_id in (0, 1, 2, 3):
+            if self._freeze_steps_remaining > 0:
+                self._freeze_steps_remaining -= 1
+                action_id = self._stall_action_from_state(state)
+            else:
+                if random.random() < self.freeze_episode_probability:
+                    self._freeze_steps_remaining = random.randint(
+                        self.freeze_min_steps,
+                        self.freeze_max_steps,
+                    ) - 1
+                    action_id = self._stall_action_from_state(state)
+                elif random.random() > self.movement_execution_probability:
+                    action_id = self._stall_action_from_state(state)
+
+        return action_id, action_probs.squeeze().detach()
+
+    def _stall_action_from_state(self, state: np.ndarray) -> int:
+        """Choose a mostly invalid non-movement action to simulate no movement."""
+        holding = bool(float(state[4]) >= 0.5)
+        # PLACE is invalid when not holding; PICK is invalid when already holding.
+        return 4 if holding else 5
 
     # ------------------------------------------------------------------
     # Training
@@ -339,34 +376,35 @@ class A2CAgent:
         # ----------------------------------------------------------------
         deltas = rewards_t + self.gamma * next_values - values
 
+        pd_deltas = torch.stack(
+            [
+                parkinsons_rpe(
+                    reward=rewards_t[t],
+                    gamma=self.gamma,
+                    value=values[t],
+                    next_value=next_values[t],
+                    surviving_fraction=self.surviving_fraction,
+                    transmission_probability=self.transmission_probability,
+                )
+                for t in range(len(rewards))
+            ]
+        )
+
         advantages_t = torch.zeros_like(rewards_t)
         gae = torch.tensor(0.0, dtype=torch.float32)
         for t in range(len(rewards) - 1, -1, -1):
             gae = (
-                deltas[t]
+                pd_deltas[t]
                 + self.gamma * self.gae_lambda * (1.0 - dones_t[t]) * gae
             )
             advantages_t[t] = gae
 
         returns_t = advantages_t + values.detach()
-        rpe = deltas
+        rpe = pd_deltas
 
-        # Advantage normalization stabilizes policy-gradient updates.
-        advantages_norm = (advantages_t - advantages_t.mean()) / (
-            advantages_t.std(unbiased=False) + 1e-8
-        )
-
-        # Update dopamine with Parkinson's-modified per-transition RPE.
-        for t in range(len(rewards)):
-            rpe_pd = parkinsons_rpe(
-                reward=rewards_t[t],
-                gamma=self.gamma,
-                value=values[t],
-                next_value=next_values[t],
-                surviving_fraction=self.surviving_fraction,
-                transmission_probability=self.transmission_probability,
-            )
-            self.dopamine.update(float(rpe_pd.detach().item()))
+        # Update dopamine with the same impaired RPE that drives learning.
+        for rpe_value in rpe.detach().cpu().tolist():
+            self.dopamine.update(float(rpe_value))
 
         mean_rpe = float(rpe.detach().mean().item())
         mean_abs_rpe = float(rpe.detach().abs().mean().item())
@@ -382,7 +420,7 @@ class A2CAgent:
             old_probs_t = torch.as_tensor(old_action_probs, dtype=torch.float32)
             old_log_probs = torch.log(old_probs_t.clamp_min(1e-8))
             ratios = torch.exp(log_probs - old_log_probs)
-            adv_detached = advantages_norm.detach()
+            adv_detached = advantages_t.detach()
             unclipped = ratios * adv_detached
             clipped = torch.clamp(
                 ratios,
@@ -392,7 +430,7 @@ class A2CAgent:
             actor_loss = -torch.min(unclipped, clipped).mean()
             approx_kl = float((old_log_probs - log_probs).mean().item())
         else:
-            actor_loss = -(log_probs * advantages_norm.detach()).mean()
+            actor_loss = -(log_probs * advantages_t.detach()).mean()
             approx_kl = 0.0
 
         # ----------------------------------------------------------------

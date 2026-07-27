@@ -47,25 +47,62 @@ from pick_and_place_env import PickAndPlaceEnv
 from results import generate_plots_from_metrics
 
 
+def _started_on_time(info: dict) -> bool:
+    """Return True only when START occurred within the allowed cue window."""
+    if not bool(info.get("task_started", False)):
+        return False
+
+    start_step = info.get("task_started_step")
+    cue_step = info.get("cue_step")
+    start_window = info.get("start_window")
+
+    if start_step is None or cue_step is None:
+        return bool(info.get("task_started", False))
+
+    if start_window is None:
+        deadline = int(cue_step)
+    else:
+        deadline = int(cue_step) + max(1, int(start_window)) - 1
+
+    return int(start_step) <= deadline
+
+
+def _is_timed_success(info: dict, episode_length: int, success_time_limit: int) -> bool:
+    """Return True only when the task is completed within the step limit."""
+    return bool(info.get("object_placed", False)) and int(episode_length) <= int(success_time_limit)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Evaluate a normal-trained checkpoint with the Parkinson dopamine variant agent."
     )
     parser.add_argument("--checkpoint", type=str, default="checkpoints/a2c_rpe_final.pt",
                         help="Path to a .pt checkpoint file.")
+    parser.add_argument(
+        "--agent_variant",
+        type=str,
+        default="parkinsons",
+        choices=("parkinsons", "parkinsons_zero_rpe"),
+        help=(
+            "Evaluation-only Parkinson mode: 'parkinsons' uses partial RPE transmission; "
+            "'parkinsons_zero_rpe' forces zero RPE."
+        ),
+    )
     parser.add_argument("--grid_size",  type=int, default=5)
     parser.add_argument("--hidden_dim", type=int, default=128)
     parser.add_argument("--episodes",   type=int, default=500)
+    parser.add_argument("--success_time_limit", type=int, default=100,
+                        help="Count success only when placement occurs within this many steps.")
     parser.add_argument("--render",     action="store_true",
                         help="Print ASCII grid after each step.")
     parser.add_argument("--seed",       type=int, default=0)
     parser.add_argument("--results_dir", type=str, default="results",
                         help="Directory to store evaluation metrics and plots.")
-    parser.add_argument("--metrics_filename", type=str, default="evaluation_metrics.csv",
+    parser.add_argument("--metrics_filename", type=str, default="evaluation_parkinsons_metrics.csv",
                         help="CSV filename for per-episode evaluation metrics.")
-    parser.add_argument("--success_plot_filename", type=str, default="success_rate.png",
+    parser.add_argument("--success_plot_filename", type=str, default="parkinsons_success_rate.png",
                         help="Filename for evaluation success-rate plot.")
-    parser.add_argument("--reward_plot_filename", type=str, default="reward.png",
+    parser.add_argument("--reward_plot_filename", type=str, default="parkinsons_reward.png",
                         help="Filename for evaluation reward plot.")
     return parser.parse_args()
 
@@ -91,8 +128,10 @@ def save_evaluation_metrics(path: str, rows: list[dict]) -> None:
         "episode",
         "reward",
         "episode_length",
+        "completed_task",
         "success",
         "started_task",
+        "started_on_time",
         "cumulative_success_rate",
         "rolling_success_rate",
         "cumulative_start_rate",
@@ -107,19 +146,32 @@ def save_evaluation_metrics(path: str, rows: list[dict]) -> None:
 def evaluate(args: argparse.Namespace) -> dict:
     """Run the agent for ``args.episodes`` episodes and return summary stats."""
     checkpoint_path = _resolve_checkpoint_path(args.checkpoint)
-    env = PickAndPlaceEnv(grid_size=args.grid_size, max_steps=200)
+    env = PickAndPlaceEnv(
+        grid_size=args.grid_size,
+        max_steps=200,
+    )
     state_dim  = env.observation_space.shape[0]
     action_dim = env.action_space.n
 
-    agent = A2CAgent(
-        state_dim=state_dim,
-        action_dim=action_dim,
-        hidden_dim=args.hidden_dim,
-    )
+    agent_kwargs = {
+        "state_dim": state_dim,
+        "action_dim": action_dim,
+        "hidden_dim": args.hidden_dim,
+    }
+    if args.agent_variant == "parkinsons_zero_rpe":
+        # Evaluation-only severe impairment: no transmitted RPE.
+        agent_kwargs.update(
+            {
+                "surviving_fraction": 0.0,
+                "transmission_probability": 0.0,
+            }
+        )
+    agent = A2CAgent(**agent_kwargs)
 
     if checkpoint_path:
         agent.load(checkpoint_path)
         print(f"Loaded checkpoint (trained with normal A2C RPE): {checkpoint_path}")
+        print(f"Evaluation Parkinson variant: {args.agent_variant}")
     else:
         print("No checkpoint provided – using randomly initialised weights.")
 
@@ -147,8 +199,10 @@ def evaluate(args: argparse.Namespace) -> dict:
 
         rewards.append(ep_reward)
         lengths.append(ep_length)
-        successes.append(info.get("object_placed", False))
-        starts.append(bool(info.get("task_started", False)))
+        completed_task = bool(info.get("object_placed", False))
+        timed_success = _is_timed_success(info, ep_length, args.success_time_limit)
+        successes.append(timed_success)
+        starts.append(_started_on_time(info))
 
         cumulative_success_rate = float(np.mean(successes))
         cumulative_start_rate = float(np.mean(starts))
@@ -158,8 +212,10 @@ def evaluate(args: argparse.Namespace) -> dict:
                 "episode": ep + 1,
                 "reward": float(ep_reward),
                 "episode_length": int(ep_length),
+                "completed_task": int(completed_task),
                 "success": int(successes[-1]),
-                "started_task": int(starts[-1]),
+                "started_task": int(bool(info.get("task_started", False))),
+                "started_on_time": int(starts[-1]),
                 "cumulative_success_rate": cumulative_success_rate,
                 "rolling_success_rate": cumulative_success_rate,
                 "cumulative_start_rate": cumulative_start_rate,
@@ -177,10 +233,11 @@ def evaluate(args: argparse.Namespace) -> dict:
     }
 
     print(f"\nEvaluation over {args.episodes} episodes:")
+    print(f"  Success criterion: placement within {args.success_time_limit} steps")
     print(f"  Mean reward  : {stats['mean_reward']:.3f} ± {stats['std_reward']:.3f}")
     print(f"  Mean length  : {stats['mean_length']:.1f}")
-    print(f"  Success rate : {stats['success_rate']:.3f}")
-    print(f"  Start rate   : {stats['start_rate']:.3f}")
+    print(f"  Timed success rate : {stats['success_rate']:.3f}")
+    print(f"  Start rate   : {stats['start_rate']:.3f} (strict: on-time starts)")
 
     os.makedirs(args.results_dir, exist_ok=True)
     metrics_path = os.path.join(args.results_dir, args.metrics_filename)
