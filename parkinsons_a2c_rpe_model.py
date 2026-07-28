@@ -50,7 +50,7 @@ class ActorCriticNetwork(nn.Module):
     ------------
     Input → [Linear → ReLU] × 2  (shared feature extractor)
          ↳ Linear → Softmax       (actor  head  – outputs π(a|s))
-         ↳ Linear                 (critic head  – outputs V(s))
+        ↳ [Linear → ReLU] × 2 → Linear  (critic head – outputs V(s))
     """
 
     def __init__(self, state_dim: int, action_dim: int, hidden_dim: int = 128):
@@ -68,7 +68,13 @@ class ActorCriticNetwork(nn.Module):
             nn.Softmax(dim=-1),
         )
         # Critic: scalar state-value estimate V(s)
-        self.critic_head = nn.Linear(hidden_dim, 1)
+        self.critic_head = nn.Sequential(
+            nn.Linear(hidden_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Linear(128, 1),
+        )
 
     def forward(self, x: torch.Tensor):
         """Return (action_probs, value) tensors for a batch of states."""
@@ -303,8 +309,9 @@ class A2CAgent:
         action_id = int(action.item())
 
         # Motor impairment layer: keep decision policy intact, but stochastically
-        # block movement execution to model random slowness and freeze episodes.
-        if action_id in (0, 1, 2, 3):
+        # block execution of movement and START actions to model slowness and
+        # freeze episodes.
+        if action_id in (0, 1, 2, 3, 6):
             if self._freeze_steps_remaining > 0:
                 self._freeze_steps_remaining -= 1
                 action_id = self._stall_action_from_state(state)

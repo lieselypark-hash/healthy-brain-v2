@@ -82,16 +82,22 @@ def parse_args() -> argparse.Namespace:
         "--agent_variant",
         type=str,
         default="parkinsons",
-        choices=("parkinsons", "parkinsons_zero_rpe"),
+        choices=(
+            "parkinsons",
+            "parkinsons_no_shaping",
+            "parkinsons_zero_rpe",
+            "parkinsons_zero_rpe_no_shaping",
+        ),
         help=(
             "Evaluation-only Parkinson mode: 'parkinsons' uses partial RPE transmission; "
-            "'parkinsons_zero_rpe' forces zero RPE."
+            "'parkinsons_zero_rpe' forces zero RPE. Use *_no_shaping variants to "
+            "disable movement reward shaping."
         ),
     )
     parser.add_argument("--grid_size",  type=int, default=5)
     parser.add_argument("--hidden_dim", type=int, default=128)
     parser.add_argument("--episodes",   type=int, default=500)
-    parser.add_argument("--success_time_limit", type=int, default=100,
+    parser.add_argument("--success_time_limit", type=int, default=75,
                         help="Count success only when placement occurs within this many steps.")
     parser.add_argument("--render",     action="store_true",
                         help="Print ASCII grid after each step.")
@@ -146,10 +152,15 @@ def save_evaluation_metrics(path: str, rows: list[dict]) -> None:
 def evaluate(args: argparse.Namespace) -> dict:
     """Run the agent for ``args.episodes`` episodes and return summary stats."""
     checkpoint_path = _resolve_checkpoint_path(args.checkpoint)
-    env = PickAndPlaceEnv(
-        grid_size=args.grid_size,
-        max_steps=200,
-    )
+    no_reward_shaping = args.agent_variant.endswith("_no_shaping")
+    base_variant = args.agent_variant.replace("_no_shaping", "")
+    env_kwargs = {
+        "grid_size": args.grid_size,
+        "max_steps": 200,
+    }
+    if no_reward_shaping:
+        env_kwargs.update({"shaping_start": 0.0, "shaping_end": 0.0})
+    env = PickAndPlaceEnv(**env_kwargs)
     state_dim  = env.observation_space.shape[0]
     action_dim = env.action_space.n
 
@@ -158,7 +169,7 @@ def evaluate(args: argparse.Namespace) -> dict:
         "action_dim": action_dim,
         "hidden_dim": args.hidden_dim,
     }
-    if args.agent_variant == "parkinsons_zero_rpe":
+    if base_variant == "parkinsons_zero_rpe":
         # Evaluation-only severe impairment: no transmitted RPE.
         agent_kwargs.update(
             {
@@ -172,6 +183,10 @@ def evaluate(args: argparse.Namespace) -> dict:
         agent.load(checkpoint_path)
         print(f"Loaded checkpoint (trained with normal A2C RPE): {checkpoint_path}")
         print(f"Evaluation Parkinson variant: {args.agent_variant}")
+        print(
+            "Reward shaping: "
+            + ("disabled" if no_reward_shaping else "default")
+        )
     else:
         print("No checkpoint provided – using randomly initialised weights.")
 

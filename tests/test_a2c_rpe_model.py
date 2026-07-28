@@ -25,6 +25,12 @@ class TestActorCriticNetwork:
     def net(self):
         return ActorCriticNetwork(state_dim=9, action_dim=7, hidden_dim=64)
 
+    def test_critic_architecture(self, net):
+        critic_linears = [
+            layer for layer in net.critic_head if isinstance(layer, torch.nn.Linear)
+        ]
+        assert [layer.out_features for layer in critic_linears] == [128, 128, 1]
+
     def test_forward_shapes(self, net):
         batch = torch.randn(4, 9)
         probs, value = net(batch)
@@ -257,6 +263,25 @@ class TestParkinsonsA2CAgent:
         state = np.zeros(STATE_DIM, dtype=np.float32)
         action, _ = agent.select_action(state)
         assert action == 5  # PICK is invalid when not holding, so movement stalls
+
+    def test_start_action_is_also_stalled(self):
+        torch.manual_seed(0)
+        agent = ParkinsonsA2CAgent(
+            STATE_DIM,
+            ACTION_DIM,
+            hidden_dim=64,
+            movement_execution_probability=0.0,
+            freeze_episode_probability=0.0,
+        )
+
+        with torch.no_grad():
+            for p in agent.network.parameters():
+                p.zero_()
+            agent.network.actor_head[0].bias[6] = 10.0  # force action 6 (START)
+
+        state = np.zeros(STATE_DIM, dtype=np.float32)
+        action, _ = agent.select_action(state)
+        assert action == 5  # START is stalled when not holding
 
     def test_freeze_episode_blocks_multiple_steps(self):
         torch.manual_seed(0)

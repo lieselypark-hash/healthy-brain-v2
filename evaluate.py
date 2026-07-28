@@ -75,10 +75,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--checkpoint", type=str, default="checkpoints/a2c_rpe_final.pt",
                         help="Path to a .pt checkpoint file.")
+    parser.add_argument(
+        "--agent_variant",
+        type=str,
+        default="normal",
+        choices=("normal", "normal_no_shaping"),
+        help="Evaluation variant. 'normal_no_shaping' disables movement reward shaping.",
+    )
     parser.add_argument("--grid_size",  type=int, default=5)
     parser.add_argument("--hidden_dim", type=int, default=128)
     parser.add_argument("--episodes",   type=int, default=500)
-    parser.add_argument("--success_time_limit", type=int, default=100,
+    parser.add_argument("--success_time_limit", type=int, default=75,
                         help="Count success only when placement occurs within this many steps.")
     parser.add_argument("--render",     action="store_true",
                         help="Print ASCII grid after each step.")
@@ -120,10 +127,14 @@ def save_evaluation_metrics(path: str, rows: list[dict]) -> None:
 
 def evaluate(args: argparse.Namespace) -> dict:
     """Run the agent for ``args.episodes`` episodes and return summary stats."""
-    env = PickAndPlaceEnv(
-        grid_size=args.grid_size,
-        max_steps=200,
-    )
+    no_reward_shaping = args.agent_variant.endswith("_no_shaping")
+    env_kwargs = {
+        "grid_size": args.grid_size,
+        "max_steps": 200,
+    }
+    if no_reward_shaping:
+        env_kwargs.update({"shaping_start": 0.0, "shaping_end": 0.0})
+    env = PickAndPlaceEnv(**env_kwargs)
     state_dim  = env.observation_space.shape[0]
     action_dim = env.action_space.n
 
@@ -136,6 +147,8 @@ def evaluate(args: argparse.Namespace) -> dict:
     if args.checkpoint:
         agent.load(args.checkpoint)
         print(f"Loaded checkpoint: {args.checkpoint}")
+        print("Evaluation normal variant: " + args.agent_variant)
+        print("Reward shaping: " + ("disabled" if no_reward_shaping else "default"))
     else:
         print("No checkpoint provided – using randomly initialised weights.")
 

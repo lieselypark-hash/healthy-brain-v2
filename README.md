@@ -11,8 +11,8 @@ healthy brain
 | Advantage path in actor update | Normalized advantages | Unnormalized impaired advantages | Not used for training (evaluation only) |
 | Motor execution | Deterministic action execution | Random slowness and freeze episodes can block movement actions | Same motor behavior as Parkinson |
 | Key impairment parameters | None | surviving_fraction, transmission_probability, movement_execution_probability, freeze_episode_probability, freeze_min_steps, freeze_max_steps | surviving_fraction=0.0, transmission_probability=0.0 |
-| Training availability | Yes (train.py --agent_variant normal) | Yes (train.py --agent_variant parkinsons) | No |
-| Evaluation availability | Via evaluate.py | Via evaluate_parkinsons.py --agent_variant parkinsons | Via evaluate_parkinsons.py --agent_variant parkinsons_zero_rpe |
+| Training availability | Yes (train.py --agent_variant normal or normal_no_shaping) | Yes (train.py --agent_variant parkinsons or parkinsons_no_shaping) | No |
+| Evaluation availability | Via evaluate.py --agent_variant normal or normal_no_shaping | Via evaluate_parkinsons.py --agent_variant parkinsons or parkinsons_no_shaping | Via evaluate_parkinsons.py --agent_variant parkinsons_zero_rpe or parkinsons_zero_rpe_no_shaping |
 
 Notes:
 

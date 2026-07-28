@@ -49,7 +49,7 @@ class ActorCriticNetwork(nn.Module):
     ------------
     Input → [Linear → ReLU] × 2  (shared feature extractor)
          ↳ Linear → Softmax       (actor  head  – outputs π(a|s))
-         ↳ Linear                 (critic head  – outputs V(s))
+        ↳ [Linear → ReLU] × 2 → Linear  (critic head – outputs V(s))
     """
 
     def __init__(self, state_dim: int, action_dim: int, hidden_dim: int = 128):
@@ -67,7 +67,13 @@ class ActorCriticNetwork(nn.Module):
             nn.Softmax(dim=-1),
         )
         # Critic: scalar state-value estimate V(s)
-        self.critic_head = nn.Linear(hidden_dim, 1)
+        self.critic_head = nn.Sequential(
+            nn.Linear(hidden_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Linear(128, 1),
+        )
 
     def forward(self, x: torch.Tensor):
         """Return (action_probs, value) tensors for a batch of states."""

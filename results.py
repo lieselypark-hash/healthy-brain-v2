@@ -48,7 +48,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--success_time_limit",
         type=int,
-        default=100,
+        default=75,
         help="Count success only when completion occurs within this many steps.",
     )
     parser.add_argument(
