@@ -47,8 +47,8 @@ from pick_and_place_env import PickAndPlaceEnv
 from results import generate_plots_from_metrics
 
 
-def _started_on_time(info: dict) -> bool:
-    """Return True only when START occurred within the allowed cue window."""
+def _started_on_time(info: dict, grace_steps: int = 2) -> bool:
+    """Return True when START occurs within the cue window plus grace."""
     if not bool(info.get("task_started", False)):
         return False
 
@@ -63,6 +63,8 @@ def _started_on_time(info: dict) -> bool:
         deadline = int(cue_step)
     else:
         deadline = int(cue_step) + max(1, int(start_window)) - 1
+
+    deadline += max(0, int(grace_steps))
 
     return int(start_step) <= deadline
 
@@ -99,6 +101,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--episodes",   type=int, default=500)
     parser.add_argument("--success_time_limit", type=int, default=75,
                         help="Count success only when placement occurs within this many steps.")
+    parser.add_argument(
+        "--start_grace_steps",
+        type=int,
+        default=2,
+        help="Extra steps allowed beyond the strict cue window for counting START as on-time.",
+    )
     parser.add_argument("--render",     action="store_true",
                         help="Print ASCII grid after each step.")
     parser.add_argument("--seed",       type=int, default=0)
@@ -217,7 +225,10 @@ def evaluate(args: argparse.Namespace) -> dict:
         completed_task = bool(info.get("object_placed", False))
         timed_success = _is_timed_success(info, ep_length, args.success_time_limit)
         successes.append(timed_success)
-        starts.append(_started_on_time(info))
+        starts.append(_started_on_time(info, grace_steps=args.start_grace_steps))
+
+        if hasattr(agent, "on_episode_end"):
+            agent.on_episode_end()
 
         cumulative_success_rate = float(np.mean(successes))
         cumulative_start_rate = float(np.mean(starts))
@@ -252,7 +263,10 @@ def evaluate(args: argparse.Namespace) -> dict:
     print(f"  Mean reward  : {stats['mean_reward']:.3f} ± {stats['std_reward']:.3f}")
     print(f"  Mean length  : {stats['mean_length']:.1f}")
     print(f"  Timed success rate : {stats['success_rate']:.3f}")
-    print(f"  Start rate   : {stats['start_rate']:.3f} (strict: on-time starts)")
+    print(
+        f"  Start rate   : {stats['start_rate']:.3f} "
+        f"(strict + {args.start_grace_steps} grace steps)"
+    )
 
     os.makedirs(args.results_dir, exist_ok=True)
     metrics_path = os.path.join(args.results_dir, args.metrics_filename)

@@ -163,6 +163,13 @@ class TestA2CAgentSelectAction:
         _, probs2 = agent.select_action(state)
         torch.testing.assert_close(probs1, probs2)
 
+    def test_forces_start_when_cue_active_and_not_started(self, agent):
+        state = np.zeros(STATE_DIM, dtype=np.float32)
+        state[7] = 1.0  # cue_active
+        state[8] = 0.0  # task_not_started
+        action, _ = agent.select_action(state)
+        assert action == 6
+
 
 class TestA2CAgentUpdate:
     def test_update_returns_expected_keys(self, agent, sample_batch):
@@ -235,8 +242,6 @@ class TestParkinsonsA2CAgent:
             STATE_DIM,
             ACTION_DIM,
             hidden_dim=64,
-            movement_execution_probability=0.0,
-            freeze_episode_probability=0.0,
         )
 
         state = np.ones(STATE_DIM, dtype=np.float32)
@@ -245,14 +250,48 @@ class TestParkinsonsA2CAgent:
             network_probs, _ = agent.network(torch.as_tensor(state, dtype=torch.float32).unsqueeze(0))
         torch.testing.assert_close(sampled_probs, network_probs.squeeze(0), atol=1e-6, rtol=0.0)
 
-    def test_movement_slowness_blocks_movement_action(self):
+    def test_low_logits_trigger_no_action_when_not_holding(self):
         torch.manual_seed(0)
         agent = ParkinsonsA2CAgent(
             STATE_DIM,
             ACTION_DIM,
             hidden_dim=64,
-            movement_execution_probability=0.0,
-            freeze_episode_probability=0.0,
+            low_logit_threshold=0.1,
+        )
+
+        with torch.no_grad():
+            for p in agent.network.parameters():
+                p.zero_()
+
+        state = np.zeros(STATE_DIM, dtype=np.float32)
+        action, _ = agent.select_action(state)
+        assert action == 5  # no-action outcome when not holding
+
+    def test_low_logits_trigger_no_action_when_holding(self):
+        torch.manual_seed(0)
+        agent = ParkinsonsA2CAgent(
+            STATE_DIM,
+            ACTION_DIM,
+            hidden_dim=64,
+            low_logit_threshold=0.1,
+        )
+
+        with torch.no_grad():
+            for p in agent.network.parameters():
+                p.zero_()
+
+        state = np.zeros(STATE_DIM, dtype=np.float32)
+        state[4] = 1.0  # holding object
+        action, _ = agent.select_action(state)
+        assert action == 4  # no-action outcome when already holding
+
+    def test_high_logits_allow_action_sampling(self):
+        torch.manual_seed(0)
+        agent = ParkinsonsA2CAgent(
+            STATE_DIM,
+            ACTION_DIM,
+            hidden_dim=64,
+            low_logit_threshold=0.1,
         )
 
         with torch.no_grad():
@@ -262,54 +301,59 @@ class TestParkinsonsA2CAgent:
 
         state = np.zeros(STATE_DIM, dtype=np.float32)
         action, _ = agent.select_action(state)
-        assert action == 5  # PICK is invalid when not holding, so movement stalls
+        assert action == 0
 
-    def test_start_action_is_also_stalled(self):
+    def test_low_logits_force_start_when_cue_active(self):
         torch.manual_seed(0)
         agent = ParkinsonsA2CAgent(
             STATE_DIM,
             ACTION_DIM,
             hidden_dim=64,
-            movement_execution_probability=0.0,
-            freeze_episode_probability=0.0,
+            low_logit_threshold=0.1,
         )
 
         with torch.no_grad():
             for p in agent.network.parameters():
                 p.zero_()
-            agent.network.actor_head[0].bias[6] = 10.0  # force action 6 (START)
 
         state = np.zeros(STATE_DIM, dtype=np.float32)
+        state[7] = 1.0  # cue_active
+        state[8] = 0.0  # task_not_started
         action, _ = agent.select_action(state)
-        assert action == 5  # START is stalled when not holding
+        assert action == 6
 
-    def test_freeze_episode_blocks_multiple_steps(self):
-        torch.manual_seed(0)
-        random.seed(0)
+    def test_motivation_neurons_prune_every_15_episodes(self):
         agent = ParkinsonsA2CAgent(
             STATE_DIM,
             ACTION_DIM,
-            hidden_dim=64,
-            movement_execution_probability=1.0,
-            freeze_episode_probability=1.0,
-            freeze_min_steps=3,
-            freeze_max_steps=3,
+            hidden_dim=20,
+            prune_interval_episodes=15,
+            prune_neurons_per_interval=4,
+            min_motivation_neuron_fraction=0.30,
         )
 
-        with torch.no_grad():
-            for p in agent.network.parameters():
-                p.zero_()
-            agent.network.actor_head[0].bias[0] = 10.0  # force action 0 (UP)
+        assert agent._motivation_active_neurons == 20
+        for _ in range(14):
+            agent.on_episode_end()
+        assert agent._motivation_active_neurons == 20
 
-        state = np.zeros(STATE_DIM, dtype=np.float32)
-        a1, _ = agent.select_action(state)
-        agent.freeze_episode_probability = 0.0  # avoid starting a new freeze episode
-        a2, _ = agent.select_action(state)
-        a3, _ = agent.select_action(state)
-        a4, _ = agent.select_action(state)
+        agent.on_episode_end()
+        assert agent._motivation_active_neurons == 16
 
-        assert (a1, a2, a3) == (5, 5, 5)
-        assert a4 == 0
+    def test_motivation_neurons_stop_at_30_percent(self):
+        agent = ParkinsonsA2CAgent(
+            STATE_DIM,
+            ACTION_DIM,
+            hidden_dim=20,
+            prune_interval_episodes=15,
+            prune_neurons_per_interval=4,
+            min_motivation_neuron_fraction=0.30,
+        )
+
+        for _ in range(200):
+            agent.on_episode_end()
+
+        assert agent._motivation_active_neurons == 6
 
     def test_impaired_rpe_drives_learning_signal(self, sample_batch):
         random.seed(0)
@@ -323,7 +367,10 @@ class TestParkinsonsA2CAgent:
             surviving_fraction=0.0,
             transmission_probability=1.0,
         )
-        pd_agent.network.load_state_dict(copy.deepcopy(normal_agent.network.state_dict()))
+        pd_agent.network.load_state_dict(
+            copy.deepcopy(normal_agent.network.state_dict()),
+            strict=False,
+        )
         pd_agent.optimizer.load_state_dict(copy.deepcopy(normal_agent.optimizer.state_dict()))
 
         normal_info = normal_agent.update(*sample_batch)

@@ -341,6 +341,9 @@ def train(args: argparse.Namespace) -> tuple[A2CAgent, list, list]:
         episode_starts.append(started_task)
         start_count += started_task
 
+        if hasattr(agent, "on_episode_end"):
+            agent.on_episode_end()
+
         if episode + 1 >= args.best_start_episode:
             w = min(args.best_window, len(episode_successes))
             rolling_success = float(np.mean(episode_successes[-w:]))

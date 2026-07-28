@@ -228,10 +228,15 @@ def evaluate_online(args: argparse.Namespace) -> dict:
 
     agent = A2CAgent(**agent_kwargs)
     agent.load(checkpoint_path)
+    # Baseline Parkinson impairment: disable 70% of motivation neurons upfront
+    # and keep this fixed during online evaluation.
+    if hasattr(agent, "set_motivation_active_fraction"):
+        agent.set_motivation_active_fraction(0.30)
     print(f"Loaded checkpoint (trained with normal A2C RPE): {checkpoint_path}")
     print(f"Evaluation Parkinson variant: {args.agent_variant}")
     print("Reward shaping: " + ("disabled" if no_reward_shaping else "default"))
     print(f"Evaluation mode: online updates every {args.n_steps} steps")
+    print("Baseline impairment: fixed 70% motivation-neuron disablement")
 
     rewards, lengths, successes, starts = [], [], [], []
     rows = []

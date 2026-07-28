@@ -53,7 +53,13 @@ class ActorCriticNetwork(nn.Module):
         ↳ [Linear → ReLU] × 2 → Linear  (critic head – outputs V(s))
     """
 
-    def __init__(self, state_dim: int, action_dim: int, hidden_dim: int = 128):
+    def __init__(
+        self,
+        state_dim: int,
+        action_dim: int,
+        hidden_dim: int = 128,
+        low_logit_threshold: float = -1.2,
+    ):
         super().__init__()
 
         self.shared = nn.Sequential(
@@ -67,6 +73,12 @@ class ActorCriticNetwork(nn.Module):
             nn.Linear(hidden_dim, action_dim),
             nn.Softmax(dim=-1),
         )
+        # Motivation head: maps F(RPE) to a feature gate that modulates
+        # actor hidden features before producing a logits adjustment.
+        self.motivation_head = nn.Linear(1, hidden_dim)
+        self.motivation_to_logits = nn.Linear(hidden_dim, action_dim)
+        self.register_buffer("motivation_neuron_mask", torch.ones(hidden_dim))
+        self.low_logit_inhibition = LowLogitInhibition(threshold=low_logit_threshold)
         # Critic: scalar state-value estimate V(s)
         self.critic_head = nn.Sequential(
             nn.Linear(hidden_dim, 128),
@@ -76,12 +88,48 @@ class ActorCriticNetwork(nn.Module):
             nn.Linear(128, 1),
         )
 
-    def forward(self, x: torch.Tensor):
-        """Return (action_probs, value) tensors for a batch of states."""
+    def forward(
+        self,
+        x: torch.Tensor,
+        motivation_signal: torch.Tensor | None = None,
+        return_no_action_mask: bool = False,
+    ):
+        """Return action probabilities and value; optionally return no-action mask."""
         features = self.shared(x)
-        action_probs = self.actor_head(features)
+
+        if motivation_signal is None:
+            motivation_signal = torch.zeros(
+                features.size(0),
+                dtype=features.dtype,
+                device=features.device,
+            )
+        motivation_signal = motivation_signal.view(-1, 1)
+        masked_motivation = self.motivation_head(motivation_signal) * self.motivation_neuron_mask.view(1, -1)
+        motivation_gate = 1.0 + torch.tanh(masked_motivation)
+        action_hidden = features * motivation_gate
+        # Pruned motivation neurons fully silence their corresponding hidden units.
+        action_hidden = action_hidden * self.motivation_neuron_mask.view(1, -1)
+        base_logits = self.actor_head[0](action_hidden)
+        action_logits = base_logits
+        action_logits, no_action_mask = self.low_logit_inhibition(action_logits)
+        action_probs = F.softmax(action_logits, dim=-1)
         value = self.critic_head(features)
+        if return_no_action_mask:
+            return action_probs, value, no_action_mask.squeeze(-1)
         return action_probs, value
+
+
+class LowLogitInhibition(nn.Module):
+    """Detect when logits are too weak to trigger a movement decision."""
+
+    def __init__(self, threshold: float = 0.0):
+        super().__init__()
+        self.threshold = float(threshold)
+
+    def forward(self, action_logits: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        max_logit = action_logits.max(dim=-1, keepdim=True).values
+        no_action_mask = max_logit < self.threshold
+        return action_logits, no_action_mask
 
 
 # ---------------------------------------------------------------------------
@@ -253,10 +301,10 @@ class A2CAgent:
         policy_clip_eps: float = 0.2,
         surviving_fraction: float = 0.3,
         transmission_probability: float = 0.3,
-        movement_execution_probability: float = 0.55,
-        freeze_episode_probability: float = 0.12,
-        freeze_min_steps: int = 4,
-        freeze_max_steps: int = 12,
+        low_logit_threshold: float = -1.2,
+        prune_interval_episodes: int = 15,
+        min_motivation_neuron_fraction: float = 0.30,
+        prune_neurons_per_interval: int | None = None,
     ):
 
         self.gamma = gamma
@@ -267,17 +315,30 @@ class A2CAgent:
         self.policy_clip_eps = policy_clip_eps
         self.surviving_fraction = surviving_fraction
         self.transmission_probability = transmission_probability
-        self.movement_execution_probability = float(
-            np.clip(movement_execution_probability, 0.0, 1.0)
+        self.low_logit_threshold = float(low_logit_threshold)
+        self.prune_interval_episodes = max(1, int(prune_interval_episodes))
+        self.min_motivation_neuron_fraction = float(np.clip(min_motivation_neuron_fraction, 0.0, 1.0))
+        self.current_episode = 0
+        self._motivation_total_neurons = int(hidden_dim)
+        self._motivation_min_neurons = max(
+            1,
+            int(np.ceil(self._motivation_total_neurons * self.min_motivation_neuron_fraction)),
         )
-        self.freeze_episode_probability = float(
-            np.clip(freeze_episode_probability, 0.0, 1.0)
+        default_prune = max(1, int(round(self._motivation_total_neurons * 0.05)))
+        self.prune_neurons_per_interval = (
+            default_prune
+            if prune_neurons_per_interval is None
+            else max(1, int(prune_neurons_per_interval))
         )
-        self.freeze_min_steps = max(1, int(freeze_min_steps))
-        self.freeze_max_steps = max(self.freeze_min_steps, int(freeze_max_steps))
-        self._freeze_steps_remaining = 0
+        self._motivation_active_neurons = self._motivation_total_neurons
 
-        self.network = ActorCriticNetwork(state_dim, action_dim, hidden_dim)
+        self.network = ActorCriticNetwork(
+            state_dim,
+            action_dim,
+            hidden_dim,
+            low_logit_threshold=self.low_logit_threshold,
+        )
+        self._apply_motivation_neuron_mask()
         self.optimizer = torch.optim.Adam(self.network.parameters(), lr=lr)
 
         # Dopamine model – tracks tonic and phasic RPE signals
@@ -303,32 +364,55 @@ class A2CAgent:
         """
         state_t = torch.as_tensor(state, dtype=torch.float32).unsqueeze(0)
         with torch.no_grad():
-            action_probs, _ = self.network(state_t)
+            action_probs, _, no_action_mask = self.network(
+                state_t,
+                return_no_action_mask=True,
+            )
+
+        if bool(no_action_mask.item()):
+            return self._stall_action_from_state(state), action_probs.squeeze().detach()
+
         dist = torch.distributions.Categorical(action_probs)
         action = dist.sample()
-        action_id = int(action.item())
+        return int(action.item()), action_probs.squeeze().detach()
 
-        # Motor impairment layer: keep decision policy intact, but stochastically
-        # block execution of movement and START actions to model slowness and
-        # freeze episodes.
-        if action_id in (0, 1, 2, 3, 6):
-            if self._freeze_steps_remaining > 0:
-                self._freeze_steps_remaining -= 1
-                action_id = self._stall_action_from_state(state)
-            else:
-                if random.random() < self.freeze_episode_probability:
-                    self._freeze_steps_remaining = random.randint(
-                        self.freeze_min_steps,
-                        self.freeze_max_steps,
-                    ) - 1
-                    action_id = self._stall_action_from_state(state)
-                elif random.random() > self.movement_execution_probability:
-                    action_id = self._stall_action_from_state(state)
+    def _apply_motivation_neuron_mask(self) -> None:
+        mask = torch.zeros(self._motivation_total_neurons)
+        mask[: self._motivation_active_neurons] = 1.0
+        self.network.motivation_neuron_mask.copy_(mask)
 
-        return action_id, action_probs.squeeze().detach()
+    def set_motivation_active_fraction(self, active_fraction: float) -> None:
+        """Set a fixed fraction of active motivation neurons."""
+        clipped = float(np.clip(active_fraction, 0.0, 1.0))
+        target = int(np.ceil(self._motivation_total_neurons * clipped))
+        self._motivation_active_neurons = int(
+            np.clip(target, 1, self._motivation_total_neurons)
+        )
+        self._apply_motivation_neuron_mask()
+
+    def on_episode_end(self) -> None:
+        """Progressively reduce active motivation neurons every fixed interval."""
+        self.current_episode += 1
+        if self.current_episode % self.prune_interval_episodes != 0:
+            return
+
+        remaining = self._motivation_active_neurons - self._motivation_min_neurons
+        if remaining <= 0:
+            return
+
+        pruned = min(self.prune_neurons_per_interval, remaining)
+        self._motivation_active_neurons -= pruned
+        self._apply_motivation_neuron_mask()
 
     def _stall_action_from_state(self, state: np.ndarray) -> int:
-        """Choose a mostly invalid non-movement action to simulate no movement."""
+        """Choose a low-drive fallback action that preserves task viability."""
+        cue_active = bool(float(state[7]) >= 0.5)
+        task_started = bool(float(state[8]) >= 0.5)
+
+        # If cue is active and the task has not started, force START.
+        if cue_active and not task_started:
+            return 6
+
         holding = bool(float(state[4]) >= 0.5)
         # PLACE is invalid when not holding; PICK is invalid when already holding.
         return 4 if holding else 5
@@ -370,7 +454,7 @@ class A2CAgent:
         dones_t = torch.as_tensor(dones, dtype=torch.float32)
 
         # Forward pass
-        action_probs, values = self.network(states_t)
+        _, values = self.network(states_t)
         values = values.squeeze(-1)
 
         # Bootstrap next-state values (masked at terminal states)
@@ -408,6 +492,14 @@ class A2CAgent:
 
         returns_t = advantages_t + values.detach()
         rpe = pd_deltas
+
+        # F(RPE): bounded, normalized modulation signal for the motivation head.
+        motivation_signal = torch.tanh(
+            (rpe - rpe.mean()) / (rpe.std(unbiased=False) + 1e-8)
+        ).detach()
+
+        # Recompute policy with motivation-adjusted logits.
+        action_probs, _ = self.network(states_t, motivation_signal=motivation_signal)
 
         # Update dopamine with the same impaired RPE that drives learning.
         for rpe_value in rpe.detach().cpu().tolist():
@@ -485,6 +577,8 @@ class A2CAgent:
                 "episode_rewards": self.episode_rewards,
                 "episode_lengths": self.episode_lengths,
                 "dopamine_stats": self.dopamine.get_stats(),
+                "current_episode": self.current_episode,
+                "motivation_active_neurons": self._motivation_active_neurons,
             },
             path,
         )
@@ -492,7 +586,44 @@ class A2CAgent:
     def load(self, path: str) -> None:
         """Load a previously saved checkpoint."""
         ckpt = torch.load(path, weights_only=False)
-        self.network.load_state_dict(ckpt["network_state_dict"])
-        self.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        load_result = self.network.load_state_dict(
+            ckpt["network_state_dict"],
+            strict=False,
+        )
+
+        allowed_missing_prefixes = (
+            "motivation_head.",
+            "motivation_to_logits.",
+            "motivation_neuron_mask",
+        )
+        disallowed_missing = [
+            key
+            for key in load_result.missing_keys
+            if not key.startswith(allowed_missing_prefixes)
+        ]
+        if disallowed_missing or load_result.unexpected_keys:
+            raise RuntimeError(
+                "Incompatible checkpoint state_dict. "
+                f"missing={disallowed_missing}, "
+                f"unexpected={load_result.unexpected_keys}"
+            )
+
+        try:
+            self.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        except ValueError:
+            # Older checkpoints can have optimizer states for fewer parameters.
+            pass
+        self.current_episode = int(ckpt.get("current_episode", 0))
+        self._motivation_active_neurons = int(
+            ckpt.get("motivation_active_neurons", self._motivation_total_neurons)
+        )
+        self._motivation_active_neurons = int(
+            np.clip(
+                self._motivation_active_neurons,
+                self._motivation_min_neurons,
+                self._motivation_total_neurons,
+            )
+        )
+        self._apply_motivation_neuron_mask()
         self.episode_rewards = ckpt.get("episode_rewards", [])
         self.episode_lengths = ckpt.get("episode_lengths", [])

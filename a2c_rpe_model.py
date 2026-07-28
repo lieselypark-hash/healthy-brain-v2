@@ -52,7 +52,14 @@ class ActorCriticNetwork(nn.Module):
         ↳ [Linear → ReLU] × 2 → Linear  (critic head – outputs V(s))
     """
 
-    def __init__(self, state_dim: int, action_dim: int, hidden_dim: int = 128):
+    def __init__(
+        self,
+        state_dim: int,
+        action_dim: int,
+        hidden_dim: int = 128,
+        low_logit_threshold: float = -1e9,
+        motivation_gain: float = 1.5,
+    ):
         super().__init__()
 
         self.shared = nn.Sequential(
@@ -66,6 +73,12 @@ class ActorCriticNetwork(nn.Module):
             nn.Linear(hidden_dim, action_dim),
             nn.Softmax(dim=-1),
         )
+        # Motivation head: maps F(RPE) to a feature gate that modulates
+        # actor hidden features before producing a logits adjustment.
+        self.motivation_head = nn.Linear(1, hidden_dim)
+        self.motivation_to_logits = nn.Linear(hidden_dim, action_dim)
+        self.motivation_gain = float(motivation_gain)
+        self.low_logit_inhibition = LowLogitInhibition(threshold=low_logit_threshold)
         # Critic: scalar state-value estimate V(s)
         self.critic_head = nn.Sequential(
             nn.Linear(hidden_dim, 128),
@@ -75,12 +88,53 @@ class ActorCriticNetwork(nn.Module):
             nn.Linear(128, 1),
         )
 
-    def forward(self, x: torch.Tensor):
-        """Return (action_probs, value) tensors for a batch of states."""
+    def forward(
+        self,
+        x: torch.Tensor,
+        motivation_signal: torch.Tensor | None = None,
+        return_no_action_mask: bool = False,
+    ):
+        """Return action probabilities and value; optionally return no-action mask."""
         features = self.shared(x)
-        action_probs = self.actor_head(features)
+
+        if motivation_signal is None:
+            motivation_signal = torch.zeros(
+                features.size(0),
+                dtype=features.dtype,
+                device=features.device,
+            )
+        motivation_signal = motivation_signal.view(-1, 1)
+        motivation_gate = 1.0 + torch.tanh(self.motivation_head(motivation_signal))
+        action_hidden = features * motivation_gate
+        base_logits = self.actor_head[0](action_hidden)
+        motivation_delta = 1.0 + torch.tanh(
+            self.motivation_to_logits(action_hidden)
+        )
+
+        # Center around 1.0 so motivation is neutral at init (delta≈1.0).
+        motivation_scale = 1.0 + self.motivation_gain * (motivation_delta - 1.0)
+        motivation_scale = torch.clamp(motivation_scale, min=0.5, max=2.0)
+        action_logits = base_logits * motivation_scale
+
+        action_logits, no_action_mask = self.low_logit_inhibition(action_logits)
+        action_probs = F.softmax(action_logits, dim=-1)
         value = self.critic_head(features)
+        if return_no_action_mask:
+            return action_probs, value, no_action_mask.squeeze(-1)
         return action_probs, value
+
+
+class LowLogitInhibition(nn.Module):
+    """Detect when logits are too weak to trigger a movement decision."""
+
+    def __init__(self, threshold: float = 0.0):
+        super().__init__()
+        self.threshold = float(threshold)
+
+    def forward(self, action_logits: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        max_logit = action_logits.max(dim=-1, keepdim=True).values
+        no_action_mask = max_logit < self.threshold
+        return action_logits, no_action_mask
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +283,8 @@ class A2CAgent:
         alpha_tonic: float = 0.005,
         grad_clip_norm: float = 0.5,
         policy_clip_eps: float = 0.2,
+        low_logit_threshold: float = -1e9,
+        motivation_gain: float = 1.5,
     ):
         self.gamma = gamma
         self.gae_lambda = gae_lambda
@@ -236,8 +292,16 @@ class A2CAgent:
         self.value_coef = value_coef
         self.grad_clip_norm = grad_clip_norm
         self.policy_clip_eps = policy_clip_eps
+        self.low_logit_threshold = float(low_logit_threshold)
+        self.motivation_gain = float(motivation_gain)
 
-        self.network = ActorCriticNetwork(state_dim, action_dim, hidden_dim)
+        self.network = ActorCriticNetwork(
+            state_dim,
+            action_dim,
+            hidden_dim,
+            low_logit_threshold=self.low_logit_threshold,
+            motivation_gain=self.motivation_gain,
+        )
         self.optimizer = torch.optim.Adam(self.network.parameters(), lr=lr)
 
         # Dopamine model – tracks tonic and phasic RPE signals
@@ -261,12 +325,33 @@ class A2CAgent:
         action : int
         action_probs : torch.Tensor  (detached)
         """
+        cue_active = bool(float(state[7]) >= 0.5)
+        task_started = bool(float(state[8]) >= 0.5)
+        if cue_active and not task_started:
+            state_t = torch.as_tensor(state, dtype=torch.float32).unsqueeze(0)
+            with torch.no_grad():
+                action_probs, _ = self.network(state_t)
+            return 6, action_probs.squeeze().detach()
+
         state_t = torch.as_tensor(state, dtype=torch.float32).unsqueeze(0)
         with torch.no_grad():
-            action_probs, _ = self.network(state_t)
+            action_probs, _, no_action_mask = self.network(
+                state_t,
+                return_no_action_mask=True,
+            )
+
+        if bool(no_action_mask.item()):
+            return self._stall_action_from_state(state), action_probs.squeeze().detach()
+
         dist = torch.distributions.Categorical(action_probs)
         action = dist.sample()
         return int(action.item()), action_probs.squeeze().detach()
+
+    def _stall_action_from_state(self, state: np.ndarray) -> int:
+        """Choose a mostly invalid non-movement action to simulate no movement."""
+        holding = bool(float(state[4]) >= 0.5)
+        # PLACE is invalid when not holding; PICK is invalid when already holding.
+        return 4 if holding else 5
 
     # ------------------------------------------------------------------
     # Training
@@ -305,7 +390,7 @@ class A2CAgent:
         dones_t = torch.as_tensor(dones, dtype=torch.float32)
 
         # Forward pass
-        action_probs, values = self.network(states_t)
+        _, values = self.network(states_t)
         values = values.squeeze(-1)
 
         # Bootstrap next-state values (masked at terminal states)
@@ -329,6 +414,14 @@ class A2CAgent:
 
         returns_t = advantages_t + values.detach()
         rpe = deltas
+
+        # F(RPE): bounded, normalized modulation signal for the motivation head.
+        motivation_signal = torch.tanh(
+            (rpe - rpe.mean()) / (rpe.std(unbiased=False) + 1e-8)
+        ).detach()
+
+        # Keep actor updates on-policy with the same forward path used in rollout.
+        action_probs, _ = self.network(states_t)
 
         # Advantage normalization stabilizes policy-gradient updates.
         advantages_norm = (advantages_t - advantages_t.mean()) / (
@@ -418,7 +511,31 @@ class A2CAgent:
     def load(self, path: str) -> None:
         """Load a previously saved checkpoint."""
         ckpt = torch.load(path, weights_only=False)
-        self.network.load_state_dict(ckpt["network_state_dict"])
-        self.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        load_result = self.network.load_state_dict(
+            ckpt["network_state_dict"],
+            strict=False,
+        )
+
+        allowed_missing_prefixes = (
+            "motivation_head.",
+            "motivation_to_logits.",
+        )
+        disallowed_missing = [
+            key
+            for key in load_result.missing_keys
+            if not key.startswith(allowed_missing_prefixes)
+        ]
+        if disallowed_missing or load_result.unexpected_keys:
+            raise RuntimeError(
+                "Incompatible checkpoint state_dict. "
+                f"missing={disallowed_missing}, "
+                f"unexpected={load_result.unexpected_keys}"
+            )
+
+        try:
+            self.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        except ValueError:
+            # Older checkpoints can have optimizer states for fewer parameters.
+            pass
         self.episode_rewards = ckpt.get("episode_rewards", [])
         self.episode_lengths = ckpt.get("episode_lengths", [])
