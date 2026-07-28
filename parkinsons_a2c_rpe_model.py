@@ -61,6 +61,7 @@ class ActorCriticNetwork(nn.Module):
         low_logit_threshold: float = -1.2,
     ):
         super().__init__()
+        self.state_dim = int(state_dim)
 
         self.shared = nn.Sequential(
             nn.Linear(state_dim, hidden_dim),
@@ -75,7 +76,7 @@ class ActorCriticNetwork(nn.Module):
         )
         # Motivation head: maps F(RPE) to a feature gate that modulates
         # actor hidden features before producing a logits adjustment.
-        self.motivation_head = nn.Linear(1, hidden_dim)
+        self.motivation_head = nn.Linear(state_dim, hidden_dim)
         self.motivation_to_logits = nn.Linear(hidden_dim, action_dim)
         self.register_buffer("motivation_neuron_mask", torch.ones(hidden_dim))
         self.low_logit_inhibition = LowLogitInhibition(threshold=low_logit_threshold)
@@ -93,19 +94,15 @@ class ActorCriticNetwork(nn.Module):
         x: torch.Tensor,
         motivation_signal: torch.Tensor | None = None,
         return_no_action_mask: bool = False,
+        return_motivation_prediction: bool = False,
     ):
         """Return action probabilities and value; optionally return no-action mask."""
         features = self.shared(x)
 
-        if motivation_signal is None:
-            motivation_signal = torch.zeros(
-                features.size(0),
-                dtype=features.dtype,
-                device=features.device,
-            )
-        motivation_signal = motivation_signal.view(-1, 1)
-        masked_motivation = self.motivation_head(motivation_signal) * self.motivation_neuron_mask.view(1, -1)
+        # Motivation is state-driven; F(RPE) is used as a supervised training target.
+        masked_motivation = self.motivation_head(x) * self.motivation_neuron_mask.view(1, -1)
         motivation_gate = 1.0 + torch.tanh(masked_motivation)
+        motivation_pred = torch.tanh((motivation_gate - 1.0).mean(dim=-1))
         action_hidden = features * motivation_gate
         # Pruned motivation neurons fully silence their corresponding hidden units.
         action_hidden = action_hidden * self.motivation_neuron_mask.view(1, -1)
@@ -114,8 +111,12 @@ class ActorCriticNetwork(nn.Module):
         action_logits, no_action_mask = self.low_logit_inhibition(action_logits)
         action_probs = F.softmax(action_logits, dim=-1)
         value = self.critic_head(features)
+        if return_no_action_mask and return_motivation_prediction:
+            return action_probs, value, no_action_mask.squeeze(-1), motivation_pred
         if return_no_action_mask:
             return action_probs, value, no_action_mask.squeeze(-1)
+        if return_motivation_prediction:
+            return action_probs, value, motivation_pred
         return action_probs, value
 
 
@@ -305,6 +306,7 @@ class A2CAgent:
         prune_interval_episodes: int = 15,
         min_motivation_neuron_fraction: float = 0.30,
         prune_neurons_per_interval: int | None = None,
+        motivation_loss_coef: float = 0.1,
     ):
 
         self.gamma = gamma
@@ -316,6 +318,7 @@ class A2CAgent:
         self.surviving_fraction = surviving_fraction
         self.transmission_probability = transmission_probability
         self.low_logit_threshold = float(low_logit_threshold)
+        self.motivation_loss_coef = float(motivation_loss_coef)
         self.prune_interval_episodes = max(1, int(prune_interval_episodes))
         self.min_motivation_neuron_fraction = float(np.clip(min_motivation_neuron_fraction, 0.0, 1.0))
         self.current_episode = 0
@@ -498,8 +501,14 @@ class A2CAgent:
             (rpe - rpe.mean()) / (rpe.std(unbiased=False) + 1e-8)
         ).detach()
 
-        # Recompute policy with motivation-adjusted logits.
-        action_probs, _ = self.network(states_t, motivation_signal=motivation_signal)
+        # Recompute policy with state-driven motivation and read motivation output.
+        action_probs, _, motivation_pred = self.network(
+            states_t,
+            return_motivation_prediction=True,
+        )
+
+        # Train state-driven motivation head against F(RPE).
+        motivation_loss = F.mse_loss(motivation_pred, motivation_signal)
 
         # Update dopamine with the same impaired RPE that drives learning.
         for rpe_value in rpe.detach().cpu().tolist():
@@ -543,6 +552,7 @@ class A2CAgent:
         total_loss = (
             actor_loss
             + self.value_coef * critic_loss
+            + self.motivation_loss_coef * motivation_loss
             - self.entropy_coef * entropy
         )
 
@@ -562,6 +572,7 @@ class A2CAgent:
             "mean_abs_rpe": mean_abs_rpe,
             "entropy": float(entropy.item()),
             "approx_kl": approx_kl,
+            "motivation_loss": float(motivation_loss.item()),
         }
 
     # ------------------------------------------------------------------
@@ -586,8 +597,15 @@ class A2CAgent:
     def load(self, path: str) -> None:
         """Load a previously saved checkpoint."""
         ckpt = torch.load(path, weights_only=False)
+        saved_state = ckpt["network_state_dict"]
+        current_state = self.network.state_dict()
+        compatible_state = {
+            k: v
+            for k, v in saved_state.items()
+            if k in current_state and current_state[k].shape == v.shape
+        }
         load_result = self.network.load_state_dict(
-            ckpt["network_state_dict"],
+            compatible_state,
             strict=False,
         )
 

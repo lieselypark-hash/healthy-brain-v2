@@ -61,6 +61,7 @@ class ActorCriticNetwork(nn.Module):
         motivation_gain: float = 1.5,
     ):
         super().__init__()
+        self.state_dim = int(state_dim)
 
         self.shared = nn.Sequential(
             nn.Linear(state_dim, hidden_dim),
@@ -75,7 +76,7 @@ class ActorCriticNetwork(nn.Module):
         )
         # Motivation head: maps F(RPE) to a feature gate that modulates
         # actor hidden features before producing a logits adjustment.
-        self.motivation_head = nn.Linear(1, hidden_dim)
+        self.motivation_head = nn.Linear(state_dim, hidden_dim)
         self.motivation_to_logits = nn.Linear(hidden_dim, action_dim)
         self.motivation_gain = float(motivation_gain)
         self.low_logit_inhibition = LowLogitInhibition(threshold=low_logit_threshold)
@@ -93,18 +94,14 @@ class ActorCriticNetwork(nn.Module):
         x: torch.Tensor,
         motivation_signal: torch.Tensor | None = None,
         return_no_action_mask: bool = False,
+        return_motivation_prediction: bool = False,
     ):
         """Return action probabilities and value; optionally return no-action mask."""
         features = self.shared(x)
 
-        if motivation_signal is None:
-            motivation_signal = torch.zeros(
-                features.size(0),
-                dtype=features.dtype,
-                device=features.device,
-            )
-        motivation_signal = motivation_signal.view(-1, 1)
-        motivation_gate = 1.0 + torch.tanh(self.motivation_head(motivation_signal))
+        # Motivation is state-driven; F(RPE) is used as a supervised training target.
+        motivation_gate = 1.0 + torch.tanh(self.motivation_head(x))
+        motivation_pred = torch.tanh((motivation_gate - 1.0).mean(dim=-1))
         action_hidden = features * motivation_gate
         base_logits = self.actor_head[0](action_hidden)
         motivation_delta = 1.0 + torch.tanh(
@@ -119,8 +116,12 @@ class ActorCriticNetwork(nn.Module):
         action_logits, no_action_mask = self.low_logit_inhibition(action_logits)
         action_probs = F.softmax(action_logits, dim=-1)
         value = self.critic_head(features)
+        if return_no_action_mask and return_motivation_prediction:
+            return action_probs, value, no_action_mask.squeeze(-1), motivation_pred
         if return_no_action_mask:
             return action_probs, value, no_action_mask.squeeze(-1)
+        if return_motivation_prediction:
+            return action_probs, value, motivation_pred
         return action_probs, value
 
 
@@ -285,6 +286,7 @@ class A2CAgent:
         policy_clip_eps: float = 0.2,
         low_logit_threshold: float = -1e9,
         motivation_gain: float = 1.5,
+        motivation_loss_coef: float = 0.1,
     ):
         self.gamma = gamma
         self.gae_lambda = gae_lambda
@@ -294,6 +296,7 @@ class A2CAgent:
         self.policy_clip_eps = policy_clip_eps
         self.low_logit_threshold = float(low_logit_threshold)
         self.motivation_gain = float(motivation_gain)
+        self.motivation_loss_coef = float(motivation_loss_coef)
 
         self.network = ActorCriticNetwork(
             state_dim,
@@ -421,7 +424,14 @@ class A2CAgent:
         ).detach()
 
         # Keep actor updates on-policy with the same forward path used in rollout.
-        action_probs, _ = self.network(states_t)
+        action_probs, _, motivation_pred = self.network(
+            states_t,
+            return_motivation_prediction=True,
+        )
+
+        # Train state-driven motivation head against F(RPE).
+        motivation_target = motivation_signal
+        motivation_loss = F.mse_loss(motivation_pred, motivation_target)
 
         # Advantage normalization stabilizes policy-gradient updates.
         advantages_norm = (advantages_t - advantages_t.mean()) / (
@@ -470,6 +480,7 @@ class A2CAgent:
         total_loss = (
             actor_loss
             + self.value_coef * critic_loss
+            + self.motivation_loss_coef * motivation_loss
             - self.entropy_coef * entropy
         )
 
@@ -489,6 +500,7 @@ class A2CAgent:
             "mean_abs_rpe": mean_abs_rpe,
             "entropy": float(entropy.item()),
             "approx_kl": approx_kl,
+            "motivation_loss": float(motivation_loss.item()),
         }
 
     # ------------------------------------------------------------------
@@ -511,8 +523,15 @@ class A2CAgent:
     def load(self, path: str) -> None:
         """Load a previously saved checkpoint."""
         ckpt = torch.load(path, weights_only=False)
+        saved_state = ckpt["network_state_dict"]
+        current_state = self.network.state_dict()
+        compatible_state = {
+            k: v
+            for k, v in saved_state.items()
+            if k in current_state and current_state[k].shape == v.shape
+        }
         load_result = self.network.load_state_dict(
-            ckpt["network_state_dict"],
+            compatible_state,
             strict=False,
         )
 
