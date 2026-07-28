@@ -185,6 +185,8 @@ def train(args: argparse.Namespace) -> tuple[A2CAgent, list, list]:
         "grid_size": args.grid_size,
         "max_steps": 200,
         "seed": args.seed,
+        "shaping_start": 1.0,
+        "shaping_end": 0.0,
     }
     if no_reward_shaping:
         env_kwargs.update({"shaping_start": 0.0, "shaping_end": 0.0})
@@ -285,7 +287,10 @@ def train(args: argparse.Namespace) -> tuple[A2CAgent, list, list]:
             args.entropy_coef
             + (args.entropy_coef_final - args.entropy_coef) * schedule_progress
         )
-        env.set_curriculum(schedule_progress)
+        # Use a monotonic curriculum for shaping so it steadily decays to 0 by
+        # the end of training, independent of adaptive schedule backoffs.
+        shaping_progress = (episode + 1) / max(args.n_episodes, 1)
+        env.set_curriculum(shaping_progress)
         current_lr = base_lr * (
             1.0 - (1.0 - args.min_lr_ratio) * schedule_progress
         )

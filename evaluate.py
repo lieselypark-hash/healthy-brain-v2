@@ -135,14 +135,18 @@ def save_evaluation_metrics(path: str, rows: list[dict]) -> None:
 
 def evaluate(args: argparse.Namespace) -> dict:
     """Run the agent for ``args.episodes`` episodes and return summary stats."""
-    no_reward_shaping = args.agent_variant.endswith("_no_shaping")
     env_kwargs = {
         "grid_size": args.grid_size,
         "max_steps": 200,
+        "shaping_start": 0.0,
+        "shaping_end": 0.0,
     }
-    if no_reward_shaping:
-        env_kwargs.update({"shaping_start": 0.0, "shaping_end": 0.0})
     env = PickAndPlaceEnv(**env_kwargs)
+    # Evaluation-only reward policy: only PICK/PLACE produce non-zero rewards.
+    env.reward_step = 0.0
+    env.reward_invalid = 0.0
+    env.reward_start = 0.0
+    env.shaping_scale = 0.0
     state_dim  = env.observation_space.shape[0]
     action_dim = env.action_space.n
 
@@ -156,7 +160,8 @@ def evaluate(args: argparse.Namespace) -> dict:
         agent.load(args.checkpoint)
         print(f"Loaded checkpoint: {args.checkpoint}")
         print("Evaluation normal variant: " + args.agent_variant)
-        print("Reward shaping: " + ("disabled" if no_reward_shaping else "default"))
+        print("Reward shaping: disabled")
+        print("Evaluation rewards: PICK/PLACE only (step/invalid/start = 0)")
     else:
         print("No checkpoint provided – using randomly initialised weights.")
 
