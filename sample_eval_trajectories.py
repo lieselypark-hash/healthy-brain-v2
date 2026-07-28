@@ -91,7 +91,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--success_time_limit",
         type=int,
-        default=100,
+        default=75,
         help="Timed-success threshold used for reporting in figure titles.",
     )
     parser.add_argument("--out_dir", type=str, default="results")

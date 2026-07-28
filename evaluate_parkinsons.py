@@ -47,8 +47,8 @@ from pick_and_place_env import PickAndPlaceEnv
 from results import generate_plots_from_metrics
 
 
-def _started_on_time(info: dict) -> bool:
-    """Return True only when START occurred within the allowed cue window."""
+def _started_on_time(info: dict, grace_steps: int = 2) -> bool:
+    """Return True when START occurs within the cue window plus grace."""
     if not bool(info.get("task_started", False)):
         return False
 
@@ -63,6 +63,8 @@ def _started_on_time(info: dict) -> bool:
         deadline = int(cue_step)
     else:
         deadline = int(cue_step) + max(1, int(start_window)) - 1
+
+    deadline += max(0, int(grace_steps))
 
     return int(start_step) <= deadline
 
@@ -82,17 +84,29 @@ def parse_args() -> argparse.Namespace:
         "--agent_variant",
         type=str,
         default="parkinsons",
-        choices=("parkinsons", "parkinsons_zero_rpe"),
+        choices=(
+            "parkinsons",
+            "parkinsons_no_shaping",
+            "parkinsons_zero_rpe",
+            "parkinsons_zero_rpe_no_shaping",
+        ),
         help=(
             "Evaluation-only Parkinson mode: 'parkinsons' uses partial RPE transmission; "
-            "'parkinsons_zero_rpe' forces zero RPE."
+            "'parkinsons_zero_rpe' forces zero RPE. Use *_no_shaping variants to "
+            "disable movement reward shaping."
         ),
     )
     parser.add_argument("--grid_size",  type=int, default=5)
     parser.add_argument("--hidden_dim", type=int, default=128)
     parser.add_argument("--episodes",   type=int, default=500)
-    parser.add_argument("--success_time_limit", type=int, default=100,
+    parser.add_argument("--success_time_limit", type=int, default=75,
                         help="Count success only when placement occurs within this many steps.")
+    parser.add_argument(
+        "--start_grace_steps",
+        type=int,
+        default=2,
+        help="Extra steps allowed beyond the strict cue window for counting START as on-time.",
+    )
     parser.add_argument("--render",     action="store_true",
                         help="Print ASCII grid after each step.")
     parser.add_argument("--seed",       type=int, default=0)
@@ -146,10 +160,19 @@ def save_evaluation_metrics(path: str, rows: list[dict]) -> None:
 def evaluate(args: argparse.Namespace) -> dict:
     """Run the agent for ``args.episodes`` episodes and return summary stats."""
     checkpoint_path = _resolve_checkpoint_path(args.checkpoint)
-    env = PickAndPlaceEnv(
-        grid_size=args.grid_size,
-        max_steps=200,
-    )
+    base_variant = args.agent_variant.replace("_no_shaping", "")
+    env_kwargs = {
+        "grid_size": args.grid_size,
+        "max_steps": 200,
+        "shaping_start": 0.0,
+        "shaping_end": 0.0,
+    }
+    env = PickAndPlaceEnv(**env_kwargs)
+    # Evaluation-only reward policy: only PICK/PLACE produce non-zero rewards.
+    env.reward_step = 0.0
+    env.reward_invalid = 0.0
+    env.reward_start = 0.0
+    env.shaping_scale = 0.0
     state_dim  = env.observation_space.shape[0]
     action_dim = env.action_space.n
 
@@ -158,7 +181,7 @@ def evaluate(args: argparse.Namespace) -> dict:
         "action_dim": action_dim,
         "hidden_dim": args.hidden_dim,
     }
-    if args.agent_variant == "parkinsons_zero_rpe":
+    if base_variant == "parkinsons_zero_rpe":
         # Evaluation-only severe impairment: no transmitted RPE.
         agent_kwargs.update(
             {
@@ -172,6 +195,8 @@ def evaluate(args: argparse.Namespace) -> dict:
         agent.load(checkpoint_path)
         print(f"Loaded checkpoint (trained with normal A2C RPE): {checkpoint_path}")
         print(f"Evaluation Parkinson variant: {args.agent_variant}")
+        print("Reward shaping: disabled")
+        print("Evaluation rewards: PICK/PLACE only (step/invalid/start = 0)")
     else:
         print("No checkpoint provided – using randomly initialised weights.")
 
@@ -202,7 +227,10 @@ def evaluate(args: argparse.Namespace) -> dict:
         completed_task = bool(info.get("object_placed", False))
         timed_success = _is_timed_success(info, ep_length, args.success_time_limit)
         successes.append(timed_success)
-        starts.append(_started_on_time(info))
+        starts.append(_started_on_time(info, grace_steps=args.start_grace_steps))
+
+        if hasattr(agent, "on_episode_end"):
+            agent.on_episode_end()
 
         cumulative_success_rate = float(np.mean(successes))
         cumulative_start_rate = float(np.mean(starts))
@@ -237,7 +265,10 @@ def evaluate(args: argparse.Namespace) -> dict:
     print(f"  Mean reward  : {stats['mean_reward']:.3f} ± {stats['std_reward']:.3f}")
     print(f"  Mean length  : {stats['mean_length']:.1f}")
     print(f"  Timed success rate : {stats['success_rate']:.3f}")
-    print(f"  Start rate   : {stats['start_rate']:.3f} (strict: on-time starts)")
+    print(
+        f"  Start rate   : {stats['start_rate']:.3f} "
+        f"(strict + {args.start_grace_steps} grace steps)"
+    )
 
     os.makedirs(args.results_dir, exist_ok=True)
     metrics_path = os.path.join(args.results_dir, args.metrics_filename)

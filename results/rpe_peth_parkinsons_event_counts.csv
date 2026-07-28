@@ -1,4 +1,4 @@
 phase,checkpoint,cue_events,reward_events
-beginning,<random_init>,200,147
-middle,checkpoints/a2c_rpe_ep500.pt,200,257
-end,checkpoints/a2c_rpe_final.pt,200,384
+beginning,<random_init>,200,129
+middle,checkpoints/a2c_rpe_ep5000.pt,200,350
+end,checkpoints/a2c_rpe_final.pt,200,308

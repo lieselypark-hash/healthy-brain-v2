@@ -79,6 +79,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reward_threshold", type=float, default=2.0,
                         help="Reward-event threshold. Default 2.0 captures pick/place rewards.")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--evaluation_reward_policy",
+        action="store_true",
+        help="Match evaluation reward policy (no shaping; only pick/place rewards).",
+    )
     return parser.parse_args()
 
 
@@ -226,11 +231,19 @@ def collect_phase_windows(
     pre: int,
     post: int,
 ) -> dict:
-    env = PickAndPlaceEnv(
-        grid_size=args.grid_size,
-        max_steps=args.max_steps,
-        seed=args.seed,
-    )
+    env_kwargs = {
+        "grid_size": args.grid_size,
+        "max_steps": args.max_steps,
+        "seed": args.seed,
+    }
+    if getattr(args, "evaluation_reward_policy", False):
+        env_kwargs.update({"shaping_start": 0.0, "shaping_end": 0.0})
+    env = PickAndPlaceEnv(**env_kwargs)
+    if getattr(args, "evaluation_reward_policy", False):
+        env.reward_step = 0.0
+        env.reward_invalid = 0.0
+        env.reward_start = 0.0
+        env.shaping_scale = 0.0
     agent = build_agent_for_env(env, args.hidden_dim, args.gamma)
 
     if ckpt_path is not None:
@@ -292,6 +305,9 @@ def collect_phase_windows(
             next_value_windows.append(extract_window(next_value_trace, idx, pre, post))
             value_windows.append(extract_window(value_trace, idx, pre, post))
             rpe_windows.append(extract_window(rpe_trace, idx, pre, post))
+
+        if hasattr(agent, "on_episode_end"):
+            agent.on_episode_end()
 
     width = pre + post + 1
     cue_mean, cue_sem, cue_n = aggregate_windows(cue_windows, width)

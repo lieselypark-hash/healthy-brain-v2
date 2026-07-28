@@ -8,7 +8,7 @@ Usage
 -----
     python evaluate_parkinsons_online.py
     python evaluate_parkinsons_online.py --checkpoint checkpoints/a2c_rpe_final.pt
-    python evaluate_parkinsons_online.py --episodes 500 --n_steps 16
+    python evaluate_parkinsons_online.py --episodes 1000 --n_steps 10
 """
 
 from __future__ import annotations
@@ -87,18 +87,24 @@ def parse_args() -> argparse.Namespace:
         "--agent_variant",
         type=str,
         default="parkinsons",
-        choices=("parkinsons", "parkinsons_zero_rpe"),
+        choices=(
+            "parkinsons",
+            "parkinsons_no_shaping",
+            "parkinsons_zero_rpe",
+            "parkinsons_zero_rpe_no_shaping",
+        ),
         help=(
             "Parkinson mode: 'parkinsons' uses partial RPE transmission; "
-            "'parkinsons_zero_rpe' forces zero RPE."
+            "'parkinsons_zero_rpe' forces zero RPE. Use *_no_shaping variants to "
+            "disable movement reward shaping."
         ),
     )
     parser.add_argument("--grid_size", type=int, default=5)
     parser.add_argument("--hidden_dim", type=int, default=128)
-    parser.add_argument("--episodes", type=int, default=500)
-    parser.add_argument("--n_steps", type=int, default=16,
+    parser.add_argument("--episodes", type=int, default=1000)
+    parser.add_argument("--n_steps", type=int, default=10,
                         help="Number of environment steps per online update.")
-    parser.add_argument("--success_time_limit", type=int, default=100,
+    parser.add_argument("--success_time_limit", type=int, default=75,
                         help="Count success only when placement occurs within this many steps.")
     parser.add_argument("--render", action="store_true",
                         help="Print ASCII grid after each step.")
@@ -195,10 +201,19 @@ def save_transitions(path: str, rows: list[dict]) -> None:
 def evaluate_online(args: argparse.Namespace) -> dict:
     """Run online-updating evaluation over ``args.episodes`` episodes."""
     checkpoint_path = _resolve_checkpoint_path(args.checkpoint)
-    env = PickAndPlaceEnv(
-        grid_size=args.grid_size,
-        max_steps=200,
-    )
+    base_variant = args.agent_variant.replace("_no_shaping", "")
+    env_kwargs = {
+        "grid_size": args.grid_size,
+        "max_steps": 200,
+        "shaping_start": 0.0,
+        "shaping_end": 0.0,
+    }
+    env = PickAndPlaceEnv(**env_kwargs)
+    # Evaluation-only reward policy: only PICK/PLACE produce non-zero rewards.
+    env.reward_step = 0.0
+    env.reward_invalid = 0.0
+    env.reward_start = 0.0
+    env.shaping_scale = 0.0
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.n
 
@@ -207,7 +222,7 @@ def evaluate_online(args: argparse.Namespace) -> dict:
         "action_dim": action_dim,
         "hidden_dim": args.hidden_dim,
     }
-    if args.agent_variant == "parkinsons_zero_rpe":
+    if base_variant == "parkinsons_zero_rpe":
         agent_kwargs.update(
             {
                 "surviving_fraction": 0.0,
@@ -217,9 +232,16 @@ def evaluate_online(args: argparse.Namespace) -> dict:
 
     agent = A2CAgent(**agent_kwargs)
     agent.load(checkpoint_path)
+    # Baseline Parkinson impairment: disable 70% of motivation neurons upfront
+    # and keep this fixed during online evaluation.
+    if hasattr(agent, "set_motivation_active_fraction"):
+        agent.set_motivation_active_fraction(0.30)
     print(f"Loaded checkpoint (trained with normal A2C RPE): {checkpoint_path}")
     print(f"Evaluation Parkinson variant: {args.agent_variant}")
+    print("Reward shaping: disabled")
+    print("Evaluation rewards: PICK/PLACE only (step/invalid/start = 0)")
     print(f"Evaluation mode: online updates every {args.n_steps} steps")
+    print("Baseline impairment: fixed 70% motivation-neuron disablement")
 
     rewards, lengths, successes, starts = [], [], [], []
     rows = []

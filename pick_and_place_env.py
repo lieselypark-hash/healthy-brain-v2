@@ -47,7 +47,7 @@ class PickAndPlaceEnv(gym.Env):
     REWARD_PICK = 2.0
     REWARD_PLACE = 20.0
     REWARD_INVALID = -0.02
-    REWARD_START = 0.2
+    REWARD_START = 0.0
 
     def __init__(
         self,

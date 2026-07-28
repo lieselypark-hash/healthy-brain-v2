@@ -75,8 +75,13 @@ def parse_args() -> argparse.Namespace:
                         help="Number of steps per A2C update.")
     parser.add_argument("--grid_size",   type=int,   default=5)
     parser.add_argument("--agent_variant", type=str, default="normal",
-                        choices=("normal", "parkinsons"),
-                        help="Which agent dynamics to train.")
+                        choices=(
+                            "normal",
+                            "normal_no_shaping",
+                            "parkinsons",
+                            "parkinsons_no_shaping",
+                        ),
+                        help="Which agent dynamics and shaping regime to train.")
     parser.add_argument("--hidden_dim",  type=int,   default=128)
     parser.add_argument("--lr",          type=float, default=2e-4)
     parser.add_argument("--gamma",       type=float, default=0.99)
@@ -120,7 +125,7 @@ def parse_args() -> argparse.Namespace:
                         help="Start selecting best policy after this many episodes.")
     parser.add_argument("--no_save",        action="store_true")
     parser.add_argument("--seed",           type=int, default=42)
-    parser.add_argument("--success_time_limit", type=int, default=100,
+    parser.add_argument("--success_time_limit", type=int, default=75,
                         help="Count success only when placement occurs within this many steps.")
     return parser.parse_args()
 
@@ -175,15 +180,25 @@ def train(args: argparse.Namespace) -> tuple[A2CAgent, list, list]:
     """
     np.random.seed(args.seed)
 
-    env = PickAndPlaceEnv(
-        grid_size=args.grid_size,
-        max_steps=200,
-        seed=args.seed,
-    )
+    no_reward_shaping = args.agent_variant.endswith("_no_shaping")
+    env_kwargs = {
+        "grid_size": args.grid_size,
+        "max_steps": 200,
+        "seed": args.seed,
+        "shaping_start": 1.0,
+        "shaping_end": 0.0,
+    }
+    if no_reward_shaping:
+        env_kwargs.update({"shaping_start": 0.0, "shaping_end": 0.0})
+    env = PickAndPlaceEnv(**env_kwargs)
     state_dim  = env.observation_space.shape[0]
     action_dim = env.action_space.n
 
-    agent_cls = NormalA2CAgent if args.agent_variant == "normal" else ParkinsonsA2CAgent
+    agent_cls = (
+        NormalA2CAgent
+        if args.agent_variant.startswith("normal")
+        else ParkinsonsA2CAgent
+    )
     agent_kwargs = {
         "state_dim": state_dim,
         "action_dim": action_dim,
@@ -197,7 +212,7 @@ def train(args: argparse.Namespace) -> tuple[A2CAgent, list, list]:
         "grad_clip_norm": args.grad_clip_norm,
         "policy_clip_eps": args.policy_clip_eps,
     }
-    if args.agent_variant == "parkinsons":
+    if args.agent_variant.startswith("parkinsons"):
         agent_kwargs.update(
             {
                 "surviving_fraction": args.surviving_fraction,
@@ -214,7 +229,8 @@ def train(args: argparse.Namespace) -> tuple[A2CAgent, list, list]:
     print("=" * 60)
     print(f"  Grid size  : {args.grid_size}×{args.grid_size}")
     print(f"  Agent      : {args.agent_variant}")
-    print("  Task       : default")
+    shaping_mode = "disabled" if no_reward_shaping else "curriculum"
+    print(f"  Reward shaping: {shaping_mode}")
     print(f"  State dim  : {state_dim}   Action dim: {action_dim}")
     print(f"  Hidden dim : {args.hidden_dim}")
     print(f"  LR={args.lr}  γ={args.gamma}  λ={args.gae_lambda}  n_steps={args.n_steps}")
@@ -271,7 +287,10 @@ def train(args: argparse.Namespace) -> tuple[A2CAgent, list, list]:
             args.entropy_coef
             + (args.entropy_coef_final - args.entropy_coef) * schedule_progress
         )
-        env.set_curriculum(schedule_progress)
+        # Use a monotonic curriculum for shaping so it steadily decays to 0 by
+        # the end of training, independent of adaptive schedule backoffs.
+        shaping_progress = (episode + 1) / max(args.n_episodes, 1)
+        env.set_curriculum(shaping_progress)
         current_lr = base_lr * (
             1.0 - (1.0 - args.min_lr_ratio) * schedule_progress
         )
@@ -326,6 +345,9 @@ def train(args: argparse.Namespace) -> tuple[A2CAgent, list, list]:
         started_task = int(last_info.get("task_started", False))
         episode_starts.append(started_task)
         start_count += started_task
+
+        if hasattr(agent, "on_episode_end"):
+            agent.on_episode_end()
 
         if episode + 1 >= args.best_start_episode:
             w = min(args.best_window, len(episode_successes))
