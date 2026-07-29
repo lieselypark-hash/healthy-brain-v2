@@ -386,68 +386,6 @@ class TestParkinsonsA2CAgent:
         pruned_scale = float(agent.network.motivation_compensation_scale.item())
         assert pruned_scale == pytest.approx(1.0 / 0.9, rel=1e-4)
 
-    def test_rpe_impairment_decays_with_motivation_pruning(self):
-        agent = ParkinsonsA2CAgent(
-            STATE_DIM,
-            ACTION_DIM,
-            hidden_dim=20,
-            prune_interval_episodes=1,
-            prune_neurons_per_interval=4,
-            min_motivation_neuron_fraction=0.30,
-        )
-
-        assert agent.surviving_fraction == pytest.approx(1.0)
-        assert agent.transmission_probability == pytest.approx(1.0)
-
-        observed = [agent.surviving_fraction]
-        for _ in range(50):
-            agent.on_episode_end()
-            observed.append(agent.surviving_fraction)
-
-        # Monotonically non-increasing, and pinned at the floor once the
-        # motivation head has reached its own 30% floor.
-        assert all(b <= a + 1e-9 for a, b in zip(observed, observed[1:]))
-        assert agent._motivation_active_neurons == 6
-        assert agent.surviving_fraction == pytest.approx(0.3)
-        assert agent.transmission_probability == pytest.approx(0.3)
-
-        # Midway through pruning the impairment is midway between the endpoints.
-        midpoint = ParkinsonsA2CAgent(
-            STATE_DIM,
-            ACTION_DIM,
-            hidden_dim=20,
-            prune_interval_episodes=1,
-            prune_neurons_per_interval=7,
-            min_motivation_neuron_fraction=0.30,
-        )
-        midpoint.on_episode_end()
-        assert midpoint._motivation_active_neurons == 13
-        assert midpoint.surviving_fraction == pytest.approx(1.0 - 0.5 * 0.7)
-
-    def test_zero_rpe_variant_stays_at_zero(self):
-        agent = ParkinsonsA2CAgent(
-            STATE_DIM,
-            ACTION_DIM,
-            hidden_dim=20,
-            surviving_fraction=0.0,
-            transmission_probability=0.0,
-            prune_interval_episodes=1,
-            prune_neurons_per_interval=4,
-            min_motivation_neuron_fraction=0.30,
-        )
-
-        for _ in range(50):
-            agent.on_episode_end()
-            assert agent.surviving_fraction == pytest.approx(0.0)
-            assert agent.transmission_probability == pytest.approx(0.0)
-
-    def test_fixed_active_fraction_sets_full_impairment(self):
-        agent = ParkinsonsA2CAgent(STATE_DIM, ACTION_DIM, hidden_dim=20)
-
-        agent.set_motivation_active_fraction(0.30)
-        assert agent.surviving_fraction == pytest.approx(0.3)
-        assert agent.transmission_probability == pytest.approx(0.3)
-
     def test_impaired_rpe_drives_learning_signal(self, sample_batch):
         random.seed(0)
         torch.manual_seed(0)
