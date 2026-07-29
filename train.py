@@ -80,6 +80,8 @@ def parse_args() -> argparse.Namespace:
                             "normal_no_shaping",
                             "parkinsons",
                             "parkinsons_no_shaping",
+                            "parkinsons_ldopa",
+                            "parkinsons_ldopa_no_shaping",
                         ),
                         help="Which agent dynamics and shaping regime to train.")
     parser.add_argument("--hidden_dim",  type=int,   default=128)
@@ -217,6 +219,7 @@ def train(args: argparse.Namespace) -> tuple[A2CAgent, list, list]:
             {
                 "surviving_fraction": args.surviving_fraction,
                 "transmission_probability": args.transmission_probability,
+                "ldopa_compensation": "ldopa" in args.agent_variant,
             }
         )
     agent = agent_cls(**agent_kwargs)

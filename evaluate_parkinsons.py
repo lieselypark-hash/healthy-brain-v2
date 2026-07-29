@@ -8,7 +8,7 @@ Usage
 -----
     python evaluate_parkinsons.py                                 # uses checkpoints/a2c_rpe_final.pt
     python evaluate_parkinsons.py --checkpoint checkpoints/a2c_rpe_final.pt
-    python evaluate_parkinsons.py --checkpoint checkpoints/a2c_rpe_final.pt --render --episodes 500
+    python evaluate_parkinsons.py --checkpoint checkpoints/a2c_rpe_final.pt --render --episodes 1000
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ _ensure_evaluation_runtime()
 import numpy as np
 import torch
 
-from parkinsons_a2c_rpe_model import A2CAgent
+from parkinsons_a2c_rpe_model import A2CAgent, parkinsons_rpe
 from pick_and_place_env import PickAndPlaceEnv
 from results import generate_plots_from_metrics
 
@@ -87,6 +87,8 @@ def parse_args() -> argparse.Namespace:
         choices=(
             "parkinsons",
             "parkinsons_no_shaping",
+            "parkinsons_ldopa",
+            "parkinsons_ldopa_no_shaping",
             "parkinsons_zero_rpe",
             "parkinsons_zero_rpe_no_shaping",
         ),
@@ -98,7 +100,22 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--grid_size",  type=int, default=5)
     parser.add_argument("--hidden_dim", type=int, default=128)
-    parser.add_argument("--episodes",   type=int, default=500)
+    parser.add_argument("--episodes",   type=int, default=1000)
+    parser.add_argument(
+        "--prune_interval_episodes",
+        type=int,
+        default=30,
+        help=(
+            "Episodes between motivation-neuron pruning steps during evaluation. "
+            "Higher values prune more slowly."
+        ),
+    )
+    parser.add_argument(
+        "--prune_neurons_per_interval",
+        type=int,
+        default=6,
+        help="Number of motivation neurons pruned at each pruning step.",
+    )
     parser.add_argument("--success_time_limit", type=int, default=75,
                         help="Count success only when placement occurs within this many steps.")
     parser.add_argument(
@@ -150,6 +167,9 @@ def save_evaluation_metrics(path: str, rows: list[dict]) -> None:
         "rolling_success_rate",
         "cumulative_start_rate",
         "rolling_start_rate",
+        "tonic_dopamine",
+        "mean_rpe",
+        "mean_abs_rpe",
     ]
     with open(path, "w", newline="", encoding="utf-8") as fp:
         writer = csv.DictWriter(fp, fieldnames=fieldnames)
@@ -180,6 +200,8 @@ def evaluate(args: argparse.Namespace) -> dict:
         "state_dim": state_dim,
         "action_dim": action_dim,
         "hidden_dim": args.hidden_dim,
+        "prune_interval_episodes": args.prune_interval_episodes,
+        "prune_neurons_per_interval": args.prune_neurons_per_interval,
     }
     if base_variant == "parkinsons_zero_rpe":
         # Evaluation-only severe impairment: no transmitted RPE.
@@ -189,6 +211,8 @@ def evaluate(args: argparse.Namespace) -> dict:
                 "transmission_probability": 0.0,
             }
         )
+    if base_variant == "parkinsons_ldopa":
+        agent_kwargs["ldopa_compensation"] = True
     agent = A2CAgent(**agent_kwargs)
 
     if checkpoint_path:
@@ -197,6 +221,11 @@ def evaluate(args: argparse.Namespace) -> dict:
         print(f"Evaluation Parkinson variant: {args.agent_variant}")
         print("Reward shaping: disabled")
         print("Evaluation rewards: PICK/PLACE only (step/invalid/start = 0)")
+        print(
+            "Pruning schedule: "
+            f"every {args.prune_interval_episodes} episodes, "
+            f"{args.prune_neurons_per_interval} neurons per step"
+        )
     else:
         print("No checkpoint provided – using randomly initialised weights.")
 
@@ -213,8 +242,28 @@ def evaluate(args: argparse.Namespace) -> dict:
             if args.render:
                 env.render()
 
-            action, _ = agent.select_action(obs)
+            state_before = obs
+            action, _ = agent.select_action(state_before)
             obs, reward, terminated, truncated, info = env.step(action)
+
+            # Evaluation-only dopamine trace: compute Parkinson RPE signal.
+            with torch.no_grad():
+                state_t = torch.as_tensor(state_before, dtype=torch.float32).unsqueeze(0)
+                next_state_t = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)
+                _, value_t = agent.network(state_t)
+                _, next_value_t = agent.network(next_state_t)
+                done_flag = float(terminated or truncated)
+                next_value_masked = next_value_t.squeeze(0).squeeze(-1) * (1.0 - done_flag)
+                pd_delta = parkinsons_rpe(
+                    reward=torch.tensor(float(reward), dtype=torch.float32),
+                    gamma=agent.gamma,
+                    value=value_t.squeeze(0).squeeze(-1),
+                    next_value=next_value_masked,
+                    surviving_fraction=agent.surviving_fraction,
+                    transmission_probability=agent.transmission_probability,
+                )
+            agent.dopamine.update(float(pd_delta.item()))
+
             ep_reward += reward
             ep_length += 1
 
@@ -235,6 +284,7 @@ def evaluate(args: argparse.Namespace) -> dict:
         cumulative_success_rate = float(np.mean(successes))
         cumulative_start_rate = float(np.mean(starts))
         rolling_start_rate = float(np.mean(starts[max(0, len(starts) - 50):]))
+        da = agent.dopamine.get_stats()
         rows.append(
             {
                 "episode": ep + 1,
@@ -248,6 +298,9 @@ def evaluate(args: argparse.Namespace) -> dict:
                 "rolling_success_rate": cumulative_success_rate,
                 "cumulative_start_rate": cumulative_start_rate,
                 "rolling_start_rate": rolling_start_rate,
+                "tonic_dopamine": float(da.get("tonic_level", 0.0)),
+                "mean_rpe": float(da.get("mean_rpe", 0.0)),
+                "mean_abs_rpe": float(da.get("mean_abs_rpe", 0.0)),
             }
         )
 

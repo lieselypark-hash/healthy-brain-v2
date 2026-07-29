@@ -79,6 +79,7 @@ class ActorCriticNetwork(nn.Module):
         self.motivation_head = nn.Linear(state_dim, hidden_dim)
         self.motivation_to_logits = nn.Linear(hidden_dim, action_dim)
         self.register_buffer("motivation_neuron_mask", torch.ones(hidden_dim))
+        self.register_buffer("motivation_compensation_scale", torch.tensor(1.0))
         self.low_logit_inhibition = LowLogitInhibition(threshold=low_logit_threshold)
         # Critic: scalar state-value estimate V(s)
         self.critic_head = nn.Sequential(
@@ -101,6 +102,7 @@ class ActorCriticNetwork(nn.Module):
 
         # Motivation is state-driven; F(RPE) is used as a supervised training target.
         masked_motivation = self.motivation_head(x) * self.motivation_neuron_mask.view(1, -1)
+        masked_motivation = masked_motivation * self.motivation_compensation_scale
         motivation_gate = 1.0 + torch.tanh(masked_motivation)
         motivation_pred = torch.tanh((motivation_gate - 1.0).mean(dim=-1))
         action_hidden = features * motivation_gate
@@ -307,6 +309,7 @@ class A2CAgent:
         min_motivation_neuron_fraction: float = 0.30,
         prune_neurons_per_interval: int | None = None,
         motivation_loss_coef: float = 0.1,
+        ldopa_compensation: bool = False,
     ):
 
         self.gamma = gamma
@@ -319,6 +322,7 @@ class A2CAgent:
         self.transmission_probability = transmission_probability
         self.low_logit_threshold = float(low_logit_threshold)
         self.motivation_loss_coef = float(motivation_loss_coef)
+        self.ldopa_compensation = bool(ldopa_compensation)
         self.prune_interval_episodes = max(1, int(prune_interval_episodes))
         self.min_motivation_neuron_fraction = float(np.clip(min_motivation_neuron_fraction, 0.0, 1.0))
         self.current_episode = 0
@@ -383,6 +387,12 @@ class A2CAgent:
         mask = torch.zeros(self._motivation_total_neurons)
         mask[: self._motivation_active_neurons] = 1.0
         self.network.motivation_neuron_mask.copy_(mask)
+        active_fraction = self._motivation_active_neurons / max(1, self._motivation_total_neurons)
+        if self.ldopa_compensation:
+            scale = 1.0 / max(active_fraction, 1e-6)
+        else:
+            scale = 1.0
+        self.network.motivation_compensation_scale.fill_(float(scale))
 
     def set_motivation_active_fraction(self, active_fraction: float) -> None:
         """Set a fixed fraction of active motivation neurons."""
@@ -590,6 +600,7 @@ class A2CAgent:
                 "dopamine_stats": self.dopamine.get_stats(),
                 "current_episode": self.current_episode,
                 "motivation_active_neurons": self._motivation_active_neurons,
+                "ldopa_compensation": self.ldopa_compensation,
             },
             path,
         )
@@ -613,6 +624,7 @@ class A2CAgent:
             "motivation_head.",
             "motivation_to_logits.",
             "motivation_neuron_mask",
+            "motivation_compensation_scale",
         )
         disallowed_missing = [
             key
@@ -631,6 +643,7 @@ class A2CAgent:
         except ValueError:
             # Older checkpoints can have optimizer states for fewer parameters.
             pass
+        self.ldopa_compensation = bool(ckpt.get("ldopa_compensation", self.ldopa_compensation))
         self.current_episode = int(ckpt.get("current_episode", 0))
         self._motivation_active_neurons = int(
             ckpt.get("motivation_active_neurons", self._motivation_total_neurons)

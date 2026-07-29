@@ -57,7 +57,7 @@ class ActorCriticNetwork(nn.Module):
         state_dim: int,
         action_dim: int,
         hidden_dim: int = 128,
-        low_logit_threshold: float = -1e9,
+        low_logit_threshold: float = -1.2,
         motivation_gain: float = 1.5,
     ):
         super().__init__()

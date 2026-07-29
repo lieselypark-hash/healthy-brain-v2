@@ -90,11 +90,16 @@ def parse_args() -> argparse.Namespace:
         choices=(
             "parkinsons",
             "parkinsons_no_shaping",
+            "parkinsons_progressive_pruning",
+            "parkinsons_progressive_pruning_no_shaping",
+            "parkinsons_ldopa",
+            "parkinsons_ldopa_no_shaping",
             "parkinsons_zero_rpe",
             "parkinsons_zero_rpe_no_shaping",
         ),
         help=(
             "Parkinson mode: 'parkinsons' uses partial RPE transmission; "
+            "'parkinsons_progressive_pruning' matches offline-style episode-wise motivation pruning; "
             "'parkinsons_zero_rpe' forces zero RPE. Use *_no_shaping variants to "
             "disable movement reward shaping."
         ),
@@ -229,19 +234,25 @@ def evaluate_online(args: argparse.Namespace) -> dict:
                 "transmission_probability": 0.0,
             }
         )
+    if base_variant == "parkinsons_ldopa":
+        agent_kwargs["ldopa_compensation"] = True
+    progressive_pruning = base_variant == "parkinsons_progressive_pruning"
 
     agent = A2CAgent(**agent_kwargs)
     agent.load(checkpoint_path)
-    # Baseline Parkinson impairment: disable 70% of motivation neurons upfront
-    # and keep this fixed during online evaluation.
-    if hasattr(agent, "set_motivation_active_fraction"):
+    # Default online mode keeps baseline impairment fixed;
+    # progressive_pruning variant mirrors offline episode-wise pruning.
+    if not progressive_pruning and hasattr(agent, "set_motivation_active_fraction"):
         agent.set_motivation_active_fraction(0.30)
     print(f"Loaded checkpoint (trained with normal A2C RPE): {checkpoint_path}")
     print(f"Evaluation Parkinson variant: {args.agent_variant}")
     print("Reward shaping: disabled")
     print("Evaluation rewards: PICK/PLACE only (step/invalid/start = 0)")
     print(f"Evaluation mode: online updates every {args.n_steps} steps")
-    print("Baseline impairment: fixed 70% motivation-neuron disablement")
+    if progressive_pruning:
+        print("Impairment schedule: progressive motivation-neuron pruning each episode")
+    else:
+        print("Baseline impairment: fixed 70% motivation-neuron disablement")
 
     rewards, lengths, successes, starts = [], [], [], []
     rows = []
@@ -338,6 +349,9 @@ def evaluate_online(args: argparse.Namespace) -> dict:
                 "mean_abs_rpe": float(da.get("mean_abs_rpe", 0.0)),
             }
         )
+
+        if progressive_pruning and hasattr(agent, "on_episode_end"):
+            agent.on_episode_end()
 
     stats = {
         "mean_reward": float(np.mean(rewards)),

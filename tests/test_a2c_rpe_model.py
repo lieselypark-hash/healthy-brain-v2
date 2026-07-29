@@ -355,6 +355,37 @@ class TestParkinsonsA2CAgent:
 
         assert agent._motivation_active_neurons == 6
 
+    def test_ldopa_compensation_tracks_inverse_active_fraction(self):
+        agent = ParkinsonsA2CAgent(
+            STATE_DIM,
+            ACTION_DIM,
+            hidden_dim=20,
+            ldopa_compensation=True,
+        )
+
+        agent.set_motivation_active_fraction(0.30)
+        scale = float(agent.network.motivation_compensation_scale.item())
+        assert scale == pytest.approx(1.0 / 0.30, rel=1e-4)
+
+    def test_ldopa_compensation_updates_with_progressive_pruning(self):
+        agent = ParkinsonsA2CAgent(
+            STATE_DIM,
+            ACTION_DIM,
+            hidden_dim=20,
+            ldopa_compensation=True,
+            prune_interval_episodes=1,
+            prune_neurons_per_interval=2,
+            min_motivation_neuron_fraction=0.30,
+        )
+
+        initial_scale = float(agent.network.motivation_compensation_scale.item())
+        assert initial_scale == pytest.approx(1.0)
+
+        agent.on_episode_end()
+        assert agent._motivation_active_neurons == 18
+        pruned_scale = float(agent.network.motivation_compensation_scale.item())
+        assert pruned_scale == pytest.approx(1.0 / 0.9, rel=1e-4)
+
     def test_impaired_rpe_drives_learning_signal(self, sample_batch):
         random.seed(0)
         torch.manual_seed(0)
