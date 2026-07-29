@@ -244,7 +244,7 @@ def parkinsons_rpe(
     ``surviving_fraction``; otherwise, it is set to zero.
 
     ``A2CAgent`` decays both parameters over training, from intact toward their
-    floors, in lockstep with motivation-neuron pruning.
+    floors, in lockstep with motivation-neuron pruning.\
     """
     delta = reward + gamma * next_value - value
     if random.random() < transmission_probability:
