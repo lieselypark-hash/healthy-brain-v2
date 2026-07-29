@@ -339,6 +339,11 @@ def main() -> None:
             }
         )
 
+        # Advance the degeneration schedule (motivation-neuron pruning plus the
+        # coupled RPE impairment decay), continuing from the checkpoint state.
+        if hasattr(agent, "on_episode_end"):
+            agent.on_episode_end()
+
     sampled_episode_numbers = _sample_episode_numbers(
         [row["episode"] for row in episode_rows],
         args.episodes_to_plot,

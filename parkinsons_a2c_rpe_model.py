@@ -79,6 +79,7 @@ class ActorCriticNetwork(nn.Module):
         self.motivation_head = nn.Linear(state_dim, hidden_dim)
         self.motivation_to_logits = nn.Linear(hidden_dim, action_dim)
         self.register_buffer("motivation_neuron_mask", torch.ones(hidden_dim))
+        self.register_buffer("motivation_compensation_scale", torch.tensor(1.0))
         self.low_logit_inhibition = LowLogitInhibition(threshold=low_logit_threshold)
         # Critic: scalar state-value estimate V(s)
         self.critic_head = nn.Sequential(
@@ -101,6 +102,7 @@ class ActorCriticNetwork(nn.Module):
 
         # Motivation is state-driven; F(RPE) is used as a supervised training target.
         masked_motivation = self.motivation_head(x) * self.motivation_neuron_mask.view(1, -1)
+        masked_motivation = masked_motivation * self.motivation_compensation_scale
         motivation_gate = 1.0 + torch.tanh(masked_motivation)
         motivation_pred = torch.tanh((motivation_gate - 1.0).mean(dim=-1))
         action_hidden = features * motivation_gate
@@ -240,6 +242,9 @@ def parkinsons_rpe(
     This mirrors a simple neuron-loss plus probabilistic transmission-failure
     model: when transmission occurs, the signal is scaled by
     ``surviving_fraction``; otherwise, it is set to zero.
+
+    ``A2CAgent`` decays both parameters over training, from intact toward their
+    floors, in lockstep with motivation-neuron pruning.
     """
     delta = reward + gamma * next_value - value
     if random.random() < transmission_probability:
@@ -300,13 +305,16 @@ class A2CAgent:
         alpha_tonic: float = 0.005,
         grad_clip_norm: float = 0.5,
         policy_clip_eps: float = 0.2,
-        surviving_fraction: float = 0.3,
-        transmission_probability: float = 0.3,
+        surviving_fraction: float = 1.0,
+        transmission_probability: float = 1.0,
+        min_surviving_fraction: float = 0.3,
+        min_transmission_probability: float = 0.3,
         low_logit_threshold: float = -1.2,
         prune_interval_episodes: int = 15,
         min_motivation_neuron_fraction: float = 0.30,
         prune_neurons_per_interval: int | None = None,
         motivation_loss_coef: float = 0.1,
+        ldopa_compensation: bool = False,
     ):
 
         self.gamma = gamma
@@ -315,10 +323,24 @@ class A2CAgent:
         self.value_coef = value_coef
         self.grad_clip_norm = grad_clip_norm
         self.policy_clip_eps = policy_clip_eps
-        self.surviving_fraction = surviving_fraction
-        self.transmission_probability = transmission_probability
+        # Degeneration endpoints: the RPE impairment starts intact and decays on
+        # the same schedule as motivation-neuron pruning (see
+        # ``_apply_motivation_neuron_mask``). The ``min`` clamps keep a caller
+        # that asks for an already-impaired start (e.g. the zero-RPE variant)
+        # pinned at that value instead of decaying toward a higher floor.
+        self._initial_surviving_fraction = float(surviving_fraction)
+        self._initial_transmission_probability = float(transmission_probability)
+        self._min_surviving_fraction = min(
+            float(min_surviving_fraction), self._initial_surviving_fraction
+        )
+        self._min_transmission_probability = min(
+            float(min_transmission_probability), self._initial_transmission_probability
+        )
+        self.surviving_fraction = self._initial_surviving_fraction
+        self.transmission_probability = self._initial_transmission_probability
         self.low_logit_threshold = float(low_logit_threshold)
         self.motivation_loss_coef = float(motivation_loss_coef)
+        self.ldopa_compensation = bool(ldopa_compensation)
         self.prune_interval_episodes = max(1, int(prune_interval_episodes))
         self.min_motivation_neuron_fraction = float(np.clip(min_motivation_neuron_fraction, 0.0, 1.0))
         self.current_episode = 0
@@ -383,6 +405,37 @@ class A2CAgent:
         mask = torch.zeros(self._motivation_total_neurons)
         mask[: self._motivation_active_neurons] = 1.0
         self.network.motivation_neuron_mask.copy_(mask)
+        active_fraction = self._motivation_active_neurons / max(1, self._motivation_total_neurons)
+        if self.ldopa_compensation:
+            scale = 1.0 / max(active_fraction, 1e-6)
+        else:
+            scale = 1.0
+        self.network.motivation_compensation_scale.fill_(float(scale))
+        self._apply_rpe_degeneration()
+
+    def _apply_rpe_degeneration(self) -> None:
+        """Step the RPE impairment in lockstep with motivation-neuron pruning.
+
+        Progress runs 0.0 (all motivation neurons active) to 1.0 (pruning floor
+        reached), so ``surviving_fraction`` and ``transmission_probability``
+        decay from their initial values to their floors on exactly the same
+        gradual steps as the neurons.
+        """
+        prunable = self._motivation_total_neurons - self._motivation_min_neurons
+        if prunable <= 0:
+            progress = 1.0
+        else:
+            pruned = self._motivation_total_neurons - self._motivation_active_neurons
+            progress = float(np.clip(pruned / prunable, 0.0, 1.0))
+
+        self.surviving_fraction = self._initial_surviving_fraction - progress * (
+            self._initial_surviving_fraction - self._min_surviving_fraction
+        )
+        self.transmission_probability = (
+            self._initial_transmission_probability
+            - progress
+            * (self._initial_transmission_probability - self._min_transmission_probability)
+        )
 
     def set_motivation_active_fraction(self, active_fraction: float) -> None:
         """Set a fixed fraction of active motivation neurons."""
@@ -590,6 +643,7 @@ class A2CAgent:
                 "dopamine_stats": self.dopamine.get_stats(),
                 "current_episode": self.current_episode,
                 "motivation_active_neurons": self._motivation_active_neurons,
+                "ldopa_compensation": self.ldopa_compensation,
             },
             path,
         )
@@ -613,6 +667,7 @@ class A2CAgent:
             "motivation_head.",
             "motivation_to_logits.",
             "motivation_neuron_mask",
+            "motivation_compensation_scale",
         )
         disallowed_missing = [
             key
@@ -631,6 +686,7 @@ class A2CAgent:
         except ValueError:
             # Older checkpoints can have optimizer states for fewer parameters.
             pass
+        self.ldopa_compensation = bool(ckpt.get("ldopa_compensation", self.ldopa_compensation))
         self.current_episode = int(ckpt.get("current_episode", 0))
         self._motivation_active_neurons = int(
             ckpt.get("motivation_active_neurons", self._motivation_total_neurons)

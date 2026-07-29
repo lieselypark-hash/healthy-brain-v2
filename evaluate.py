@@ -5,7 +5,7 @@ Usage
 -----
     python evaluate.py                                 # uses checkpoints/a2c_rpe_final.pt
     python evaluate.py --checkpoint checkpoints/a2c_rpe_final.pt
-    python evaluate.py --checkpoint checkpoints/a2c_rpe_final.pt --render --episodes 500
+    python evaluate.py --checkpoint checkpoints/a2c_rpe_final.pt --render --episodes 1000
 """
 
 from __future__ import annotations
@@ -86,7 +86,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--grid_size",  type=int, default=5)
     parser.add_argument("--hidden_dim", type=int, default=128)
-    parser.add_argument("--episodes",   type=int, default=500)
+    parser.add_argument("--episodes",   type=int, default=1000)
     parser.add_argument("--success_time_limit", type=int, default=75,
                         help="Count success only when placement occurs within this many steps.")
     parser.add_argument(
@@ -126,6 +126,9 @@ def save_evaluation_metrics(path: str, rows: list[dict]) -> None:
         "rolling_success_rate",
         "cumulative_start_rate",
         "rolling_start_rate",
+        "tonic_dopamine",
+        "mean_rpe",
+        "mean_abs_rpe",
     ]
     with open(path, "w", newline="", encoding="utf-8") as fp:
         writer = csv.DictWriter(fp, fieldnames=fieldnames)
@@ -178,8 +181,22 @@ def evaluate(args: argparse.Namespace) -> dict:
             if args.render:
                 env.render()
 
-            action, _ = agent.select_action(obs)
+            state_before = obs
+            action, _ = agent.select_action(state_before)
             obs, reward, terminated, truncated, info = env.step(action)
+
+            # Evaluation-only dopamine trace: compute TD/RPE without updating weights.
+            with torch.no_grad():
+                state_t = torch.as_tensor(state_before, dtype=torch.float32).unsqueeze(0)
+                next_state_t = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)
+                _, value_t = agent.network(state_t)
+                _, next_value_t = agent.network(next_state_t)
+                done_flag = float(terminated or truncated)
+                td_error = float(
+                    reward + agent.gamma * next_value_t.item() * (1.0 - done_flag) - value_t.item()
+                )
+            agent.dopamine.update(td_error)
+
             ep_reward += reward
             ep_length += 1
 
@@ -197,6 +214,7 @@ def evaluate(args: argparse.Namespace) -> dict:
         cumulative_success_rate = float(np.mean(successes))
         cumulative_start_rate = float(np.mean(starts))
         rolling_start_rate = float(np.mean(starts[max(0, len(starts) - 50):]))
+        da = agent.dopamine.get_stats()
         rows.append(
             {
                 "episode": ep + 1,
@@ -210,6 +228,9 @@ def evaluate(args: argparse.Namespace) -> dict:
                 "rolling_success_rate": cumulative_success_rate,
                 "cumulative_start_rate": cumulative_start_rate,
                 "rolling_start_rate": rolling_start_rate,
+                "tonic_dopamine": float(da.get("tonic_level", 0.0)),
+                "mean_rpe": float(da.get("mean_rpe", 0.0)),
+                "mean_abs_rpe": float(da.get("mean_abs_rpe", 0.0)),
             }
         )
 
