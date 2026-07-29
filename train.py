@@ -106,10 +106,16 @@ def parse_args() -> argparse.Namespace:
                         help="Lower bound for LR annealing as a fraction of base LR.")
     parser.add_argument("--alpha_tonic", type=float, default=0.005,
                         help="Tonic dopamine EMA coefficient.")
-    parser.add_argument("--surviving_fraction", type=float, default=0.3,
-                        help="Parkinson's dopamine signal scale when transmitted.")
-    parser.add_argument("--transmission_probability", type=float, default=0.3,
-                        help="Probability that a Parkinson's dopamine signal is transmitted.")
+    parser.add_argument("--surviving_fraction", type=float, default=1.0,
+                        help="Initial Parkinson's dopamine signal scale when transmitted; "
+                             "decays toward --min_surviving_fraction as motivation neurons are pruned.")
+    parser.add_argument("--transmission_probability", type=float, default=1.0,
+                        help="Initial probability that a Parkinson's dopamine signal is transmitted; "
+                             "decays toward --min_transmission_probability as motivation neurons are pruned.")
+    parser.add_argument("--min_surviving_fraction", type=float, default=0.3,
+                        help="Floor for the Parkinson's dopamine signal scale.")
+    parser.add_argument("--min_transmission_probability", type=float, default=0.3,
+                        help="Floor for the Parkinson's dopamine transmission probability.")
     parser.add_argument("--log_interval",   type=int, default=100)
     parser.add_argument("--save_interval",  type=int, default=500)
     parser.add_argument("--save_dir",       type=str, default="checkpoints")
@@ -219,6 +225,8 @@ def train(args: argparse.Namespace) -> tuple[A2CAgent, list, list]:
             {
                 "surviving_fraction": args.surviving_fraction,
                 "transmission_probability": args.transmission_probability,
+                "min_surviving_fraction": args.min_surviving_fraction,
+                "min_transmission_probability": args.min_transmission_probability,
                 "ldopa_compensation": "ldopa" in args.agent_variant,
             }
         )
