@@ -19,7 +19,6 @@ import importlib.util
 import json
 import os
 import sys
-from typing import Optional
 
 
 def _ensure_evaluation_runtime() -> None:
@@ -47,6 +46,7 @@ import torch
 from parkinsons_a2c_rpe_model import A2CAgent
 from pick_and_place_env import PickAndPlaceEnv
 from results import generate_plots_from_metrics
+from logit_utils import get_motivation_updated_action_logits, assert_logits_match_forward
 
 
 def _started_on_time(info: dict) -> bool:
@@ -170,6 +170,7 @@ def save_evaluation_metrics(path: str, rows: list[dict]) -> None:
         "tonic_dopamine",
         "mean_rpe",
         "mean_abs_rpe",
+        "max_logit",
     ]
     with open(path, "w", newline="", encoding="utf-8") as fp:
         writer = csv.DictWriter(fp, fieldnames=fieldnames)
@@ -257,6 +258,7 @@ def evaluate_online(args: argparse.Namespace) -> dict:
     rewards, lengths, successes, starts = [], [], [], []
     rows = []
     transition_rows = []
+    checked_logits_once = False
 
     for ep in range(args.episodes):
         obs, _ = env.reset(seed=args.seed + ep)
@@ -265,6 +267,7 @@ def evaluate_online(args: argparse.Namespace) -> dict:
         terminated = False
         truncated = False
         last_info = {}
+        episode_max_logit = -float("inf")
 
         while not (terminated or truncated):
             batch_s, batch_a, batch_r, batch_ns, batch_d, batch_old_p = [], [], [], [], [], []
@@ -272,6 +275,14 @@ def evaluate_online(args: argparse.Namespace) -> dict:
             for _ in range(args.n_steps):
                 if args.render:
                     env.render()
+
+                with torch.no_grad():
+                    state_t = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)
+                    if not checked_logits_once:
+                        assert_logits_match_forward(agent.network, state_t)
+                        checked_logits_once = True
+                    step_logits = get_motivation_updated_action_logits(agent.network, state_t)
+                    episode_max_logit = max(episode_max_logit, float(step_logits.max().item()))
 
                 action, action_probs = agent.select_action(obs)
                 next_obs, reward, terminated, truncated, info = env.step(action)
@@ -314,7 +325,7 @@ def evaluate_online(args: argparse.Namespace) -> dict:
 
         if args.render:
             env.render()
-            print(f"--- Episode {ep+1} end. Reward={ep_reward:.2f} ---\\n")
+            print(f"--- Episode {ep+1} end. Reward={ep_reward:.2f} ---\n")
 
         completed_task = bool(last_info.get("object_placed", False))
         timed_success = _is_timed_success(last_info, ep_length, args.success_time_limit)
@@ -347,6 +358,7 @@ def evaluate_online(args: argparse.Namespace) -> dict:
                 "tonic_dopamine": float(da.get("tonic_level", 0.0)),
                 "mean_rpe": float(da.get("mean_rpe", 0.0)),
                 "mean_abs_rpe": float(da.get("mean_abs_rpe", 0.0)),
+                "max_logit": float(episode_max_logit),
             }
         )
 
@@ -362,7 +374,7 @@ def evaluate_online(args: argparse.Namespace) -> dict:
         "episodes": args.episodes,
     }
 
-    print(f"\\nOnline evaluation over {args.episodes} episodes:")
+    print(f"\nOnline evaluation over {args.episodes} episodes:")
     print(f"  Success criterion: placement within {args.success_time_limit} steps")
     print(f"  Mean reward  : {stats['mean_reward']:.3f} +- {stats['std_reward']:.3f}")
     print(f"  Mean length  : {stats['mean_length']:.1f}")
