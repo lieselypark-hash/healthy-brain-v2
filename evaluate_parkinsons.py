@@ -2,7 +2,9 @@
 Evaluation script using the Parkinson dopamine variant agent.
 
 This script is intended to load checkpoints trained with the normal
-``a2c_rpe_model`` and evaluate them without retraining.
+``a2c_rpe_model`` and evaluate them without retraining. Weights are NEVER
+updated during this script — it is the "offline" evaluation counterpart to
+evaluate_parkinsons_online.py, which continues learning during evaluation.
 
 Usage
 -----
@@ -45,6 +47,7 @@ import torch
 from parkinsons_a2c_rpe_model import A2CAgent, parkinsons_rpe
 from pick_and_place_env import PickAndPlaceEnv
 from results import generate_plots_from_metrics
+from logit_utils import get_motivation_updated_action_logits, assert_logits_match_forward
 
 
 def _started_on_time(info: dict, grace_steps: int = 2) -> bool:
@@ -170,6 +173,7 @@ def save_evaluation_metrics(path: str, rows: list[dict]) -> None:
         "tonic_dopamine",
         "mean_rpe",
         "mean_abs_rpe",
+        "max_logit",
     ]
     with open(path, "w", newline="", encoding="utf-8") as fp:
         writer = csv.DictWriter(fp, fieldnames=fieldnames)
@@ -207,8 +211,8 @@ def evaluate(args: argparse.Namespace) -> dict:
         # Evaluation-only severe impairment: no transmitted RPE.
         agent_kwargs.update(
             {
-                "surviving_fraction": 0.0,
-                "transmission_probability": 0.0,
+                "initial_surviving_fraction": 0.0,
+                "initial_transmission_probability": 0.0,
             }
         )
     if base_variant == "parkinsons_ldopa":
@@ -231,12 +235,14 @@ def evaluate(args: argparse.Namespace) -> dict:
 
     rewards, lengths, successes, starts = [], [], [], []
     rows: list[dict] = []
+    checked_logits_once = False
 
     for ep in range(args.episodes):
         obs, _ = env.reset(seed=args.seed + ep)
         ep_reward = 0.0
         ep_length = 0
         terminated = truncated = False
+        episode_max_logit = -float("inf")
 
         while not (terminated or truncated):
             if args.render:
@@ -246,7 +252,8 @@ def evaluate(args: argparse.Namespace) -> dict:
             action, _ = agent.select_action(state_before)
             obs, reward, terminated, truncated, info = env.step(action)
 
-            # Evaluation-only dopamine trace: compute Parkinson RPE signal.
+            # Evaluation-only dopamine trace: compute Parkinson RPE signal,
+            # and also log the motivation-updated max logit for this step.
             with torch.no_grad():
                 state_t = torch.as_tensor(state_before, dtype=torch.float32).unsqueeze(0)
                 next_state_t = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)
@@ -259,9 +266,17 @@ def evaluate(args: argparse.Namespace) -> dict:
                     gamma=agent.gamma,
                     value=value_t.squeeze(0).squeeze(-1),
                     next_value=next_value_masked,
-                    surviving_fraction=agent.surviving_fraction,
-                    transmission_probability=agent.transmission_probability,
+                    initial_surviving_fraction=agent.surviving_fraction,
+                    initial_transmission_probability=agent.transmission_probability,
+                    current_episode=agent.current_episode,
                 )
+
+                if not checked_logits_once:
+                    assert_logits_match_forward(agent.network, state_t)
+                    checked_logits_once = True
+                step_logits = get_motivation_updated_action_logits(agent.network, state_t)
+                episode_max_logit = max(episode_max_logit, float(step_logits.max().item()))
+
             agent.dopamine.update(float(pd_delta.item()))
 
             ep_reward += reward
@@ -280,6 +295,8 @@ def evaluate(args: argparse.Namespace) -> dict:
 
         if hasattr(agent, "on_episode_end"):
             agent.on_episode_end()
+
+        agent.current_episode += 1
 
         cumulative_success_rate = float(np.mean(successes))
         cumulative_start_rate = float(np.mean(starts))
@@ -301,6 +318,7 @@ def evaluate(args: argparse.Namespace) -> dict:
                 "tonic_dopamine": float(da.get("tonic_level", 0.0)),
                 "mean_rpe": float(da.get("mean_rpe", 0.0)),
                 "mean_abs_rpe": float(da.get("mean_abs_rpe", 0.0)),
+                "max_logit": float(episode_max_logit),
             }
         )
 

@@ -234,18 +234,41 @@ def parkinsons_rpe(
     gamma: float,
     value: torch.Tensor,
     next_value: torch.Tensor,
-    surviving_fraction: float = 0.3,
-    transmission_probability: float = 0.3,
+    current_episode: int,
+    initial_surviving_fraction: float = 1,
+    initial_transmission_probability: float = 1,
+    decay_interval: int = 30,
+    decay_rate: float = 0.046,
+    minimum_fraction: float = 0.3,
+    minimum_probability: float = 0.3,
 ) -> torch.Tensor:
     """Return a Parkinson's-modified TD error signal.
 
     This mirrors a simple neuron-loss plus probabilistic transmission-failure
     model: when transmission occurs, the signal is scaled by
     ``surviving_fraction``; otherwise, it is set to zero.
+
+    ``A2CAgent`` decays both parameters over training, from intact toward their
+    floors, in lockstep with motivation-neuron pruning.\
     """
     delta = reward + gamma * next_value - value
+
+    # Number of degeneration events that have occurred
+    degeneration_steps = current_episode // decay_interval
+
+    surviving_fraction = max(
+        minimum_fraction,
+        initial_surviving_fraction - degeneration_steps * decay_rate,
+    )
+
+    transmission_probability = max(
+        minimum_probability,
+        initial_transmission_probability - degeneration_steps * decay_rate,
+    )
+
     if random.random() < transmission_probability:
         return surviving_fraction * delta
+
     return torch.zeros_like(delta)
 
 
@@ -302,14 +325,17 @@ class A2CAgent:
         alpha_tonic: float = 0.005,
         grad_clip_norm: float = 0.5,
         policy_clip_eps: float = 0.2,
-        surviving_fraction: float = 0.3,
-        transmission_probability: float = 0.3,
+        surviving_fraction: float = 1.0,
+        transmission_probability: float = 1.0,
+        min_surviving_fraction: float = 0.3,
+        min_transmission_probability: float = 0.3,
         low_logit_threshold: float = -1.2,
         prune_interval_episodes: int = 15,
         min_motivation_neuron_fraction: float = 0.30,
         prune_neurons_per_interval: int | None = None,
         motivation_loss_coef: float = 0.1,
         ldopa_compensation: bool = False,
+        current_episode: int = 0,
     ):
 
         self.gamma = gamma
@@ -325,7 +351,7 @@ class A2CAgent:
         self.ldopa_compensation = bool(ldopa_compensation)
         self.prune_interval_episodes = max(1, int(prune_interval_episodes))
         self.min_motivation_neuron_fraction = float(np.clip(min_motivation_neuron_fraction, 0.0, 1.0))
-        self.current_episode = 0
+        self.current_episode = current_episode
         self._motivation_total_neurons = int(hidden_dim)
         self._motivation_min_neurons = max(
             1,
@@ -487,8 +513,9 @@ class A2CAgent:
                     gamma=self.gamma,
                     value=values[t],
                     next_value=next_values[t],
-                    surviving_fraction=self.surviving_fraction,
-                    transmission_probability=self.transmission_probability,
+                    current_episode=self.current_episode,
+                    initial_surviving_fraction=self.surviving_fraction,
+                    initial_transmission_probability=self.transmission_probability,
                 )
                 for t in range(len(rewards))
             ]

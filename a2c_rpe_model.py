@@ -284,7 +284,7 @@ class A2CAgent:
         alpha_tonic: float = 0.005,
         grad_clip_norm: float = 0.5,
         policy_clip_eps: float = 0.2,
-        low_logit_threshold: float = -1e9,
+        low_logit_threshold: float = -1.2,
         motivation_gain: float = 1.5,
         motivation_loss_coef: float = 0.1,
     ):
@@ -321,21 +321,13 @@ class A2CAgent:
 
     def select_action(self, state: np.ndarray):
         """
-        Sample an action from the current policy π(·|s).
+    Sample an action from the current policy π(·|s).
 
-        Returns
-        -------
-        action : int
-        action_probs : torch.Tensor  (detached)
+    Returns
+    -------
+    action : int
+    action_probs : torch.Tensor  (detached)
         """
-        cue_active = bool(float(state[7]) >= 0.5)
-        task_started = bool(float(state[8]) >= 0.5)
-        if cue_active and not task_started:
-            state_t = torch.as_tensor(state, dtype=torch.float32).unsqueeze(0)
-            with torch.no_grad():
-                action_probs, _ = self.network(state_t)
-            return 6, action_probs.squeeze().detach()
-
         state_t = torch.as_tensor(state, dtype=torch.float32).unsqueeze(0)
         with torch.no_grad():
             action_probs, _, no_action_mask = self.network(
