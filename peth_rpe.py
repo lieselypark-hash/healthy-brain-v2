@@ -269,7 +269,7 @@ def collect_phase_windows(
                 cue_events.append(len(rpe_trace) - 1)
             prev_cue_active = cue_active
 
-            if reward >= args.reward_threshold:
+            if reward == args.reward_threshold:
                 reward_events.append(len(rpe_trace) - 1)
 
             obs = next_obs
