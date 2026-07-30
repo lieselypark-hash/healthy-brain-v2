@@ -1,0 +1,73 @@
+============================================================
+  A2C + RPE Dopamine Model – Pick-and-Place Task
+============================================================
+  Grid size  : 5×5
+  Agent      : parkinsons
+  Reward shaping: curriculum
+  State dim  : 9   Action dim: 7
+  Hidden dim : 128
+  LR=0.0002  γ=0.99  λ=0.95  n_steps=16
+  Success criterion: placement within 75 steps
+  Entropy: 0.08 → 0.01 (adaptive target success 0.95)
+============================================================
+Ep   100/4000  AvgReward:  +3.730  AvgLen:  184.9  TimedSuccess: 0.020  StartRate: 1.000  RollSuccess: 0.000  LR: 0.000200  RPE(mean): +0.0060  RPE(|mean|): +0.0134  Tonic DA: +0.0307
+Ep   200/4000  AvgReward:  +3.755  AvgLen:  178.1  TimedSuccess: 0.050  StartRate: 1.000  RollSuccess: 0.050  LR: 0.000193  RPE(mean): -0.0008  RPE(|mean|): +0.0059  Tonic DA: -0.0010
+Ep   300/4000  AvgReward:  +3.393  AvgLen:  183.5  TimedSuccess: 0.043  StartRate: 1.000  RollSuccess: 0.055  LR: 0.000192  RPE(mean): -0.0002  RPE(|mean|): +0.0064  Tonic DA: -0.0009
+Ep   400/4000  AvgReward:  +3.647  AvgLen:  181.8  TimedSuccess: 0.048  StartRate: 1.000  RollSuccess: 0.045  LR: 0.000193  RPE(mean): +0.0058  RPE(|mean|): +0.0128  Tonic DA: +0.0314
+Ep   500/4000  AvgReward:  +3.320  AvgLen:  184.1  TimedSuccess: 0.044  StartRate: 1.000  RollSuccess: 0.045  LR: 0.000193  RPE(mean): -0.0013  RPE(|mean|): +0.0055  Tonic DA: -0.0013
+  [checkpoint saved → checkpoints/parkinsons/a2c_rpe_ep500.pt]
+Ep   600/4000  AvgReward:  +4.647  AvgLen:  174.3  TimedSuccess: 0.050  StartRate: 1.000  RollSuccess: 0.055  LR: 0.000192  RPE(mean): +0.0118  RPE(|mean|): +0.0177  Tonic DA: +0.0012
+Ep   700/4000  AvgReward:  +3.109  AvgLen:  189.8  TimedSuccess: 0.043  StartRate: 1.000  RollSuccess: 0.040  LR: 0.000194  RPE(mean): -0.0005  RPE(|mean|): +0.0063  Tonic DA: +0.0004
+Ep   800/4000  AvgReward:  +4.323  AvgLen:  178.5  TimedSuccess: 0.048  StartRate: 1.000  RollSuccess: 0.040  LR: 0.000194  RPE(mean): +0.0053  RPE(|mean|): +0.0123  Tonic DA: +0.0102
+Ep   900/4000  AvgReward:  +3.103  AvgLen:  180.4  TimedSuccess: 0.049  StartRate: 1.000  RollSuccess: 0.070  LR: 0.000190  RPE(mean): -0.0003  RPE(|mean|): +0.0051  Tonic DA: +0.0018
+Ep  1000/4000  AvgReward:  +3.732  AvgLen:  182.1  TimedSuccess: 0.047  StartRate: 1.000  RollSuccess: 0.045  LR: 0.000193  RPE(mean): -0.0006  RPE(|mean|): +0.0053  Tonic DA: -0.0002
+  [checkpoint saved → checkpoints/parkinsons/a2c_rpe_ep1000.pt]
+Ep  1100/4000  AvgReward:  +2.930  AvgLen:  182.5  TimedSuccess: 0.048  StartRate: 1.000  RollSuccess: 0.045  LR: 0.000193  RPE(mean): -0.0008  RPE(|mean|): +0.0042  Tonic DA: -0.0012
+Ep  1200/4000  AvgReward:  +4.554  AvgLen:  181.2  TimedSuccess: 0.046  StartRate: 1.000  RollSuccess: 0.040  LR: 0.000194  RPE(mean): -0.0008  RPE(|mean|): +0.0048  Tonic DA: +0.0011
+Ep  1300/4000  AvgReward:  +4.038  AvgLen:  187.8  TimedSuccess: 0.044  StartRate: 1.000  RollSuccess: 0.020  LR: 0.000197  RPE(mean): +0.0001  RPE(|mean|): +0.0055  Tonic DA: +0.0003
+Ep  1400/4000  AvgReward:  +4.669  AvgLen:  178.3  TimedSuccess: 0.045  StartRate: 1.000  RollSuccess: 0.040  LR: 0.000194  RPE(mean): -0.0013  RPE(|mean|): +0.0042  Tonic DA: -0.0014
+Ep  1500/4000  AvgReward:  +6.138  AvgLen:  174.0  TimedSuccess: 0.046  StartRate: 1.000  RollSuccess: 0.060  LR: 0.000191  RPE(mean): +0.0061  RPE(|mean|): +0.0108  Tonic DA: +0.0030
+  [checkpoint saved → checkpoints/parkinsons/a2c_rpe_ep1500.pt]
+Ep  1600/4000  AvgReward:  +3.834  AvgLen:  182.2  TimedSuccess: 0.047  StartRate: 1.000  RollSuccess: 0.060  LR: 0.000191  RPE(mean): +0.0008  RPE(|mean|): +0.0059  Tonic DA: +0.0026
+Ep  1700/4000  AvgReward:  +5.386  AvgLen:  174.2  TimedSuccess: 0.047  StartRate: 1.000  RollSuccess: 0.055  LR: 0.000192  RPE(mean): +0.0053  RPE(|mean|): +0.0110  Tonic DA: +0.0129
+Ep  1800/4000  AvgReward:  +4.337  AvgLen:  184.1  TimedSuccess: 0.046  StartRate: 1.000  RollSuccess: 0.040  LR: 0.000194  RPE(mean): -0.0005  RPE(|mean|): +0.0042  Tonic DA: +0.0000
+Ep  1900/4000  AvgReward:  +4.532  AvgLen:  178.8  TimedSuccess: 0.046  StartRate: 1.000  RollSuccess: 0.040  LR: 0.000194  RPE(mean): +0.0059  RPE(|mean|): +0.0103  Tonic DA: +0.0026
+Ep  2000/4000  AvgReward:  +4.162  AvgLen:  178.8  TimedSuccess: 0.046  StartRate: 1.000  RollSuccess: 0.045  LR: 0.000193  RPE(mean): +0.0068  RPE(|mean|): +0.0108  Tonic DA: +0.0141
+  [checkpoint saved → checkpoints/parkinsons/a2c_rpe_ep2000.pt]
+Ep  2100/4000  AvgReward:  +3.337  AvgLen:  184.1  TimedSuccess: 0.046  StartRate: 1.000  RollSuccess: 0.040  LR: 0.000194  RPE(mean): +0.0073  RPE(|mean|): +0.0113  Tonic DA: +0.0131
+Ep  2200/4000  AvgReward:  +4.150  AvgLen:  176.6  TimedSuccess: 0.048  StartRate: 1.000  RollSuccess: 0.065  LR: 0.000190  RPE(mean): -0.0007  RPE(|mean|): +0.0043  Tonic DA: -0.0001
+Ep  2300/4000  AvgReward:  +5.829  AvgLen:  169.4  TimedSuccess: 0.049  StartRate: 1.000  RollSuccess: 0.085  LR: 0.000187  RPE(mean): -0.0010  RPE(|mean|): +0.0037  Tonic DA: -0.0011
+Ep  2400/4000  AvgReward:  +4.056  AvgLen:  180.1  TimedSuccess: 0.049  StartRate: 1.000  RollSuccess: 0.060  LR: 0.000191  RPE(mean): +0.0004  RPE(|mean|): +0.0044  Tonic DA: +0.0010
+Ep  2500/4000  AvgReward:  +4.965  AvgLen:  181.2  TimedSuccess: 0.047  StartRate: 1.000  RollSuccess: 0.025  LR: 0.000196  RPE(mean): +0.0126  RPE(|mean|): +0.0168  Tonic DA: +0.0132
+  [checkpoint saved → checkpoints/parkinsons/a2c_rpe_ep2500.pt]
+Ep  2600/4000  AvgReward:  +3.568  AvgLen:  183.1  TimedSuccess: 0.047  StartRate: 1.000  RollSuccess: 0.030  LR: 0.000196  RPE(mean): -0.0005  RPE(|mean|): +0.0036  Tonic DA: -0.0003
+Ep  2700/4000  AvgReward:  +3.818  AvgLen:  186.7  TimedSuccess: 0.046  StartRate: 1.000  RollSuccess: 0.030  LR: 0.000196  RPE(mean): +0.0110  RPE(|mean|): +0.0154  Tonic DA: +0.0341
+Ep  2800/4000  AvgReward:  +4.308  AvgLen:  178.2  TimedSuccess: 0.046  StartRate: 1.000  RollSuccess: 0.030  LR: 0.000196  RPE(mean): -0.0000  RPE(|mean|): +0.0038  Tonic DA: +0.0008
+Ep  2900/4000  AvgReward:  +4.303  AvgLen:  179.5  TimedSuccess: 0.047  StartRate: 1.000  RollSuccess: 0.055  LR: 0.000192  RPE(mean): +0.0004  RPE(|mean|): +0.0037  Tonic DA: -0.0002
+Ep  3000/4000  AvgReward:  +3.690  AvgLen:  185.4  TimedSuccess: 0.046  StartRate: 1.000  RollSuccess: 0.040  LR: 0.000194  RPE(mean): +0.0002  RPE(|mean|): +0.0044  Tonic DA: -0.0001
+  [checkpoint saved → checkpoints/parkinsons/a2c_rpe_ep3000.pt]
+Ep  3100/4000  AvgReward:  +4.445  AvgLen:  182.3  TimedSuccess: 0.045  StartRate: 1.000  RollSuccess: 0.025  LR: 0.000196  RPE(mean): -0.0000  RPE(|mean|): +0.0039  Tonic DA: +0.0004
+Ep  3200/4000  AvgReward:  +3.394  AvgLen:  178.8  TimedSuccess: 0.046  StartRate: 1.000  RollSuccess: 0.050  LR: 0.000193  RPE(mean): -0.0006  RPE(|mean|): +0.0028  Tonic DA: -0.0005
+Ep  3300/4000  AvgReward:  +2.993  AvgLen:  182.6  TimedSuccess: 0.046  StartRate: 1.000  RollSuccess: 0.055  LR: 0.000192  RPE(mean): -0.0007  RPE(|mean|): +0.0026  Tonic DA: -0.0004
+Ep  3400/4000  AvgReward:  +4.583  AvgLen:  174.8  TimedSuccess: 0.047  StartRate: 1.000  RollSuccess: 0.060  LR: 0.000191  RPE(mean): -0.0009  RPE(|mean|): +0.0028  Tonic DA: -0.0008
+Ep  3500/4000  AvgReward:  +3.876  AvgLen:  178.7  TimedSuccess: 0.047  StartRate: 1.000  RollSuccess: 0.065  LR: 0.000190  RPE(mean): -0.0010  RPE(|mean|): +0.0023  Tonic DA: -0.0008
+  [checkpoint saved → checkpoints/parkinsons/a2c_rpe_ep3500.pt]
+Ep  3600/4000  AvgReward:  +5.022  AvgLen:  177.7  TimedSuccess: 0.047  StartRate: 1.000  RollSuccess: 0.050  LR: 0.000193  RPE(mean): +0.0002  RPE(|mean|): +0.0041  Tonic DA: +0.0001
+Ep  3700/4000  AvgReward:  +4.105  AvgLen:  181.7  TimedSuccess: 0.047  StartRate: 1.000  RollSuccess: 0.045  LR: 0.000193  RPE(mean): -0.0005  RPE(|mean|): +0.0031  Tonic DA: -0.0003
+Ep  3800/4000  AvgReward:  +3.680  AvgLen:  177.8  TimedSuccess: 0.047  StartRate: 1.000  RollSuccess: 0.055  LR: 0.000193  RPE(mean): +0.0000  RPE(|mean|): +0.0034  Tonic DA: +0.0021
+Ep  3900/4000  AvgReward:  +4.702  AvgLen:  179.4  TimedSuccess: 0.047  StartRate: 1.000  RollSuccess: 0.060  LR: 0.000191  RPE(mean): +0.0112  RPE(|mean|): +0.0143  Tonic DA: +0.0302
+Ep  4000/4000  AvgReward:  +6.775  AvgLen:  170.3  TimedSuccess: 0.048  StartRate: 1.000  RollSuccess: 0.050  LR: 0.000192  RPE(mean): +0.0005  RPE(|mean|): +0.0044  Tonic DA: +0.0005
+  [checkpoint saved → checkpoints/parkinsons/a2c_rpe_ep4000.pt]
+
+============================================================
+  Training complete. Episodes: 4000
+  Overall timed success rate: 0.048
+  Final tonic dopamine level: 0.0005
+  Start rate: 1.000
+  Mid-training stability restores: 0
+  Restored best policy from episode 2293 (rolling success=0.085)
+============================================================
+  Final model saved → checkpoints/parkinsons/a2c_rpe_final.pt
+  Training metrics saved → results/parkinsons_training/training_metrics.csv
+  Success-rate plot saved → results/parkinsons_training/success_rate.png
+  Reward plot saved → results/parkinsons_training/reward.png
