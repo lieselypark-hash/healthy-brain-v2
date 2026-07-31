@@ -121,6 +121,7 @@ class ArmSimulator:
         self._paused = False
         self._seed = 0
         self._clock = 0.0
+        self._viewer = None  # set once run() launches the GUI thread
 
         self.xml = build_scene_xml(self.labels)
         self.model = mujoco.MjModel.from_xml_string(self.xml)
@@ -312,20 +313,38 @@ class ArmSimulator:
     # -- keyboard controls --------------------------------------------------
 
     def _key_callback(self, keycode: int) -> None:
+        """Entry point MuJoCo calls on ITS OWN GUI thread, separate from the
+        thread running run()'s main loop below. Every mjData/mjModel mutation
+        must go through self._viewer.lock() to avoid racing that other
+        thread -- without it, pressing any key that touches qpos/geom_rgba
+        (which is most of them) can corrupt shared state and crash the whole
+        process. The try/except is a second line of defense: an exception
+        escaping a native callback like this can also take the process down,
+        so nothing is allowed to propagate out of here.
+        """
+        try:
+            self._handle_key(keycode)
+        except Exception as exc:  # pylint: disable=broad-except
+            print(f"[sim] key handler error (ignored): {exc!r}")
+
+    def _handle_key(self, keycode: int) -> None:
+        if self._viewer is None:
+            return
         key = chr(keycode) if 0 <= keycode < 256 else ""
-        if key == " ":
-            self.toggle_pause()
-            print("[sim] " + ("paused" if self._paused else "resumed"))
-        elif key.lower() == "r":
-            self.request_new_episode()
-        elif key in "12" and len(self.labels) > 1:
-            idx = int(key) - 1
-            if idx < len(self.labels):
-                self.toggle_visible(self.labels[idx])
-        elif key == "3":
-            for track in self._tracks.values():
-                if not track.visible:
-                    self._set_visible(track, True)
+        with self._viewer.lock():
+            if key == " ":
+                self.toggle_pause()
+                print("[sim] " + ("paused" if self._paused else "resumed"))
+            elif key.lower() == "r":
+                self.request_new_episode()
+            elif key in "12" and len(self.labels) > 1:
+                idx = int(key) - 1
+                if idx < len(self.labels):
+                    self.toggle_visible(self.labels[idx])
+            elif key == "3":
+                for track in self._tracks.values():
+                    if not track.visible:
+                        self._set_visible(track, True)
 
     # -- main loop ------------------------------------------------------------
 
@@ -340,14 +359,23 @@ class ArmSimulator:
         with mujoco.viewer.launch_passive(
             self.model, self.data, key_callback=self._key_callback
         ) as viewer:
+            self._viewer = viewer
             period = 1.0 / PLAYBACK_HZ
-            while viewer.is_running():
-                start = time.time()
-                if not self._paused:
-                    self._advance()
-                    self._maybe_auto_replay()
-                self._clock += period
-                self._apply_all()
-                viewer.sync()
-                elapsed = time.time() - start
-                time.sleep(max(0.0, period - elapsed))
+            try:
+                while viewer.is_running():
+                    start = time.time()
+                    # Everything that can touch qpos/mocap_pos/geom_rgba (or
+                    # trigger a new episode, which touches them too) must be
+                    # inside this lock -- _key_callback fires on a different
+                    # thread and takes the same lock before mutating anything.
+                    with viewer.lock():
+                        if not self._paused:
+                            self._advance()
+                            self._maybe_auto_replay()
+                        self._clock += period
+                        self._apply_all()
+                    viewer.sync()
+                    elapsed = time.time() - start
+                    time.sleep(max(0.0, period - elapsed))
+            finally:
+                self._viewer = None
